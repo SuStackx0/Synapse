@@ -11,7 +11,7 @@ from core.models import Repository
 from ingestion.ast_parser import walk_repo
 from ingestion.graph_builder import graph_builder
 from ingestion.embedder import embedder
-from ingestion.git_history import get_commit_history, build_commit_chunks
+from ingestion.git_history import get_commit_history
 from connectors.local import clone_local
 from connectors.github import clone_github
 import structlog
@@ -36,21 +36,13 @@ async def _index_repo(repo_id: str, repo_path: str):
     async with SessionLocal() as db:
         try:
             parsed = walk_repo(repo_path)
+            # Build Neo4j call graph (structure + all doc text)
             await graph_builder.build_graph(repo_id, parsed)
-            await embedder.index_files(repo_id, parsed)
-
-            # Index git history into same vector collection
+            # Embed prose only — docstrings, signatures, no raw code
+            await embedder.index_symbols(repo_id, parsed)
+            # Embed commit messages only (not diffs)
             commits = get_commit_history(repo_path)
-            commit_chunks = build_commit_chunks(commits)
-            if commit_chunks:
-                await embedder.index_files(repo_id, [
-                    {
-                        "content": c["text"],
-                        "rel_path": f"git/commit_{c['meta']['sha']}",
-                        "language": "git",
-                    }
-                    for c in commit_chunks
-                ])
+            await embedder.index_commits(repo_id, commits)
 
             result = await db.execute(select(Repository).where(Repository.id == repo_id))
             repo = result.scalar_one_or_none()

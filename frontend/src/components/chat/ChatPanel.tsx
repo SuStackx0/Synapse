@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type AgentType = "qa" | "debug" | "review";
-interface RetrievalTrace { files: string[]; graph_edges: number; trace: any[]; }
+interface RetrievalTrace { anchors: string[]; intent: string; has_commits: boolean; trace: any[]; }
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -71,7 +71,7 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
         if (event.event === "retrieval_done") {
           setMessages((m) => [
             ...m.slice(0, -1),
-            { ...placeholder, retrieval: { files: event.files, graph_edges: event.graph_edges, trace: event.trace } },
+            { ...placeholder, retrieval: { anchors: event.anchors || [], intent: event.intent || "semantic", has_commits: event.has_commits || false, trace: event.trace } },
           ]);
         } else if (event.event === "answer" || event.content) {
           setMessages((m) => [
@@ -142,15 +142,19 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
                 {/* Retrieval trace badge */}
                 {m.role === "assistant" && m.retrieval && (
                   <div className="flex flex-wrap items-center gap-1.5 mb-2">
-                    <span className="text-[10px] font-mono text-synapse-muted uppercase tracking-wider">Retrieved:</span>
-                    {m.retrieval.files.slice(0, 4).map((f) => (
-                      <span key={f} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-synapse-cyan/10 border border-synapse-cyan/20 text-[10px] font-mono text-synapse-cyan">
-                        <FileCode className="w-2.5 h-2.5" /> {f.split("/").pop()}
+                    <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                      m.retrieval.intent === "structural" ? "text-synapse-green border-synapse-green/30 bg-synapse-green/10" :
+                      m.retrieval.intent === "historical" ? "text-yellow-400 border-yellow-400/30 bg-yellow-400/10" :
+                      "text-synapse-cyan border-synapse-cyan/30 bg-synapse-cyan/10"
+                    }`}>{m.retrieval.intent}</span>
+                    {m.retrieval.anchors.slice(0, 3).map((a) => (
+                      <span key={a} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-synapse-purple/10 border border-synapse-purple/20 text-[10px] font-mono text-synapse-purple">
+                        <FileCode className="w-2.5 h-2.5" /> {a}
                       </span>
                     ))}
-                    {m.retrieval.graph_edges > 0 && (
-                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-synapse-green/10 border border-synapse-green/20 text-[10px] font-mono text-synapse-green">
-                        <GitBranch className="w-2.5 h-2.5" /> {m.retrieval.graph_edges} graph edges
+                    {m.retrieval.has_commits && (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-400/10 border border-yellow-400/20 text-[10px] font-mono text-yellow-400">
+                        <GitBranch className="w-2.5 h-2.5" /> git history
                       </span>
                     )}
                   </div>

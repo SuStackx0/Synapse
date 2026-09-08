@@ -30,8 +30,10 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         "messages": messages,
         "repo_id": req.repo_id,
         "agent_type": req.agent_type,
-        "context_chunks": [],
-        "graph_context": [],
+        "intent": "",
+        "anchors": [],
+        "context_sgl": "",
+        "commit_context": "",
         "retrieval_trace": [],
     }
 
@@ -41,17 +43,12 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
 
         result = await graph.ainvoke(state)
 
-        # Signal: what was retrieved
         trace = result.get("retrieval_trace", [])
-        chunks = result.get("context_chunks", [])
-        graph_ctx = result.get("graph_context", [])
+        anchors = result.get("anchors", [])
+        intent = result.get("intent", "semantic")
+        has_commits = bool(result.get("commit_context"))
 
-        retrieved_files = list(dict.fromkeys(
-            c.split("]")[0].replace("[", "").strip()
-            for c in chunks if c.startswith("[")
-        ))
-
-        yield f"data: {json.dumps({'event': 'retrieval_done', 'files': retrieved_files[:6], 'graph_edges': len(graph_ctx), 'trace': trace})}\n\n"
+        yield f"data: {json.dumps({'event': 'retrieval_done', 'anchors': anchors, 'intent': intent, 'has_commits': has_commits, 'trace': trace})}\n\n"
 
         # Signal: answer
         ai_messages = [m for m in result["messages"] if hasattr(m, "content") and m.content != req.message]
@@ -86,8 +83,10 @@ async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
             "messages": [HumanMessage(content=req.query)],
             "repo_id": req.repo_id,
             "agent_type": "qa",
-            "context_chunks": [],
-            "graph_context": [],
+            "intent": "",
+            "anchors": [],
+            "context_sgl": "",
+            "commit_context": "",
             "retrieval_trace": [],
         }
         t0 = time.time()
