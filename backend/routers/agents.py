@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Literal
-import json, time
+import json, time, asyncio
 
 from core.database import get_db
 from agents.graph import build_agent_graph, AgentState
@@ -31,13 +31,32 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         "repo_id": req.repo_id,
         "agent_type": req.agent_type,
         "context_chunks": [],
+        "graph_context": [],
+        "retrieval_trace": [],
     }
 
     async def stream_response():
+        # Signal: retrieval starting
+        yield f"data: {json.dumps({'event': 'retrieval_start'})}\n\n"
+
         result = await graph.ainvoke(state)
-        ai_messages = [m for m in result["messages"] if hasattr(m, "content") and m != messages[0]]
+
+        # Signal: what was retrieved
+        trace = result.get("retrieval_trace", [])
+        chunks = result.get("context_chunks", [])
+        graph_ctx = result.get("graph_context", [])
+
+        retrieved_files = list(dict.fromkeys(
+            c.split("]")[0].replace("[", "").strip()
+            for c in chunks if c.startswith("[")
+        ))
+
+        yield f"data: {json.dumps({'event': 'retrieval_done', 'files': retrieved_files[:6], 'graph_edges': len(graph_ctx), 'trace': trace})}\n\n"
+
+        # Signal: answer
+        ai_messages = [m for m in result["messages"] if hasattr(m, "content") and m.content != req.message]
         content = ai_messages[-1].content if ai_messages else "No response generated."
-        yield f"data: {json.dumps({'content': content, 'done': True})}\n\n"
+        yield f"data: {json.dumps({'event': 'answer', 'content': content, 'done': True})}\n\n"
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
 
@@ -54,8 +73,6 @@ async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
     from sqlalchemy import select
     from core.models import LLMProvider, BenchmarkResult
     from agents.llm_factory import build_llm_from_provider
-    from agents.graph import build_agent_graph, AgentState
-    from langchain.schema import HumanMessage
     import uuid
 
     async def run_one(provider_id: str):
@@ -70,15 +87,20 @@ async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
             "repo_id": req.repo_id,
             "agent_type": "qa",
             "context_chunks": [],
+            "graph_context": [],
+            "retrieval_trace": [],
         }
         t0 = time.time()
         out = await graph.ainvoke(state)
         latency = time.time() - t0
         ai_msgs = [m for m in out["messages"] if hasattr(m, "content") and m.content != req.query]
-        return ai_msgs[-1].content if ai_msgs else "", latency
+        return (ai_msgs[-1].content if ai_msgs else ""), latency
 
-    resp_a, lat_a = await run_one(req.provider_a_id)
-    resp_b, lat_b = await run_one(req.provider_b_id)
+    # Run both providers concurrently
+    (resp_a, lat_a), (resp_b, lat_b) = await asyncio.gather(
+        run_one(req.provider_a_id),
+        run_one(req.provider_b_id),
+    )
 
     bench = BenchmarkResult(
         id=str(uuid.uuid4()),

@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional
 import uuid, os
 
-from core.database import get_db
+from core.config import settings
+from core.database import get_db, SessionLocal
 from core.models import Repository
 from ingestion.ast_parser import walk_repo
 from ingestion.graph_builder import graph_builder
@@ -30,30 +31,37 @@ class GitHubRepoRequest(BaseModel):
     name: Optional[str] = None
 
 
-async def _index_repo(repo_id: str, repo_path: str, db: AsyncSession):
-    try:
-        parsed = walk_repo(repo_path)
-        await graph_builder.build_graph(repo_id, parsed)
-        await embedder.index_files(repo_id, parsed)
+async def _index_repo(repo_id: str, repo_path: str):
+    """Background task with its own DB session — not request-scoped."""
+    async with SessionLocal() as db:
+        try:
+            parsed = walk_repo(repo_path)
+            await graph_builder.build_graph(repo_id, parsed)
+            await embedder.index_files(repo_id, parsed)
 
-        # Index git history
-        commits = get_commit_history(repo_path)
-        commit_chunks = build_commit_chunks(commits)
-        if commit_chunks:
-            await embedder.index_files(repo_id, [
-                {"content": c["text"], "rel_path": f"git/commit_{c['meta']['sha']}", "language": "git"}
-                for c in commit_chunks
-            ])
+            # Index git history into same vector collection
+            commits = get_commit_history(repo_path)
+            commit_chunks = build_commit_chunks(commits)
+            if commit_chunks:
+                await embedder.index_files(repo_id, [
+                    {
+                        "content": c["text"],
+                        "rel_path": f"git/commit_{c['meta']['sha']}",
+                        "language": "git",
+                    }
+                    for c in commit_chunks
+                ])
 
-        result = await db.execute(select(Repository).where(Repository.id == repo_id))
-        repo = result.scalar_one_or_none()
-        if repo:
-            repo.indexed = True
-            repo.file_count = len(parsed)
-            await db.commit()
-        logger.info("repo_indexed", repo_id=repo_id, files=len(parsed), commits=len(commits))
-    except Exception as e:
-        logger.error("index_failed", repo_id=repo_id, error=str(e))
+            result = await db.execute(select(Repository).where(Repository.id == repo_id))
+            repo = result.scalar_one_or_none()
+            if repo:
+                repo.indexed = True
+                repo.file_count = len(parsed)
+                await db.commit()
+
+            logger.info("repo_indexed", repo_id=repo_id, files=len(parsed), commits=len(commits))
+        except Exception as e:
+            logger.error("index_failed", repo_id=repo_id, error=str(e), exc_info=True)
 
 
 @router.post("/local")
@@ -63,7 +71,7 @@ async def add_local_repo(req: LocalRepoRequest, bg: BackgroundTasks, db: AsyncSe
     repo = Repository(id=repo_id, name=name, path=dest_path, source="local")
     db.add(repo)
     await db.commit()
-    bg.add_task(_index_repo, repo_id, dest_path, db)
+    bg.add_task(_index_repo, repo_id, dest_path)
     return {"repo_id": repo_id, "name": name, "status": "indexing"}
 
 
@@ -75,16 +83,19 @@ async def add_github_repo(req: GitHubRepoRequest, bg: BackgroundTasks, db: Async
                       meta={"url": req.url})
     db.add(repo)
     await db.commit()
-    bg.add_task(_index_repo, repo_id, dest_path, db)
+    bg.add_task(_index_repo, repo_id, dest_path)
     return {"repo_id": repo_id, "name": name, "status": "indexing"}
 
 
 @router.get("/")
 async def list_repos(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Repository))
-    return [{"id": r.id, "name": r.name, "source": r.source,
-             "indexed": r.indexed, "file_count": r.file_count,
-             "created_at": r.created_at.isoformat()} for r in result.scalars()]
+    return [
+        {"id": r.id, "name": r.name, "source": r.source,
+         "indexed": r.indexed, "file_count": r.file_count,
+         "created_at": r.created_at.isoformat()}
+        for r in result.scalars()
+    ]
 
 
 @router.get("/{repo_id}")
@@ -93,9 +104,11 @@ async def get_repo(repo_id: str, db: AsyncSession = Depends(get_db)):
     repo = result.scalar_one_or_none()
     if not repo:
         raise HTTPException(404, "Repo not found")
-    return {"id": repo.id, "name": repo.name, "source": repo.source,
-            "indexed": repo.indexed, "file_count": repo.file_count,
-            "language": repo.language, "created_at": repo.created_at.isoformat()}
+    return {
+        "id": repo.id, "name": repo.name, "source": repo.source,
+        "indexed": repo.indexed, "file_count": repo.file_count,
+        "language": repo.language, "created_at": repo.created_at.isoformat(),
+    }
 
 
 @router.delete("/{repo_id}")

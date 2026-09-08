@@ -1,40 +1,52 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
-import { streamChat } from "@/lib/api";
-import { Brain, Bug, Eye, Send, Loader2, Terminal } from "lucide-react";
+import { Brain, Bug, Eye, Send, Loader2, Terminal, FileCode, GitBranch } from "lucide-react";
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type AgentType = "qa" | "debug" | "review";
-interface Message { role: "user" | "assistant"; content: string; agent?: AgentType; }
+const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-const AGENTS: { id: AgentType; label: string; icon: React.ElementType; desc: string; color: string }[] = [
-  { id: "qa", label: "Ask", icon: Brain, desc: "Ask anything about the codebase", color: "synapse-cyan" },
-  { id: "debug", label: "Debug", icon: Bug, desc: "Paste an error, get root cause", color: "red-400" },
-  { id: "review", label: "Review", icon: Eye, desc: "Review code quality", color: "synapse-purple" },
+type AgentType = "qa" | "debug" | "review";
+interface RetrievalTrace { files: string[]; graph_edges: number; trace: any[]; }
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  agent?: AgentType;
+  retrieval?: RetrievalTrace;
+  loading?: boolean;
+}
+
+const AGENTS: { id: AgentType; label: string; icon: React.ElementType; desc: string; accent: string }[] = [
+  { id: "qa", label: "Ask", icon: Brain, desc: "Ask anything about the codebase", accent: "cyan" },
+  { id: "debug", label: "Debug", icon: Bug, desc: "Paste an error, get root cause", accent: "red" },
+  { id: "review", label: "Review", icon: Eye, desc: "Review code for quality issues", accent: "purple" },
 ];
 
 const STARTERS: Record<AgentType, string[]> = {
-  qa: [
-    "What are the main entry points of this project?",
-    "How does authentication work?",
-    "What changed in the last 10 commits?",
-    "List all API endpoints defined",
-  ],
-  debug: [
-    "TypeError: Cannot read properties of undefined",
-    "KeyError in Python dict access",
-    "CORS error on API call",
-    "ModuleNotFoundError at startup",
-  ],
-  review: [
-    "Review the main application file",
-    "Check for security vulnerabilities",
-    "Identify performance bottlenecks",
-    "Look for missing error handling",
-  ],
+  qa: ["What are the main entry points?", "How does authentication work?", "What changed in the last 10 commits?", "List all API endpoints"],
+  debug: ["TypeError: Cannot read property of undefined", "CORS error on API call", "ModuleNotFoundError at startup", "Async function never resolves"],
+  review: ["Review the main app file", "Check for security vulnerabilities", "Identify performance bottlenecks", "Find missing error handling"],
 };
+
+async function* streamChat(repoId: string, message: string, agentType: string) {
+  const res = await fetch(`${BASE}/agents/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo_id: repoId, message, agent_type: agentType }),
+  });
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const line of dec.decode(value).split("\n")) {
+      if (line.startsWith("data: ")) {
+        try { yield JSON.parse(line.slice(6)); } catch {}
+      }
+    }
+  }
+}
 
 export default function ChatPanel({ repoId }: { repoId: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -49,97 +61,117 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
     const msg = text || input.trim();
     if (!msg || streaming) return;
     setInput("");
-    const userMsg: Message = { role: "user", content: msg, agent };
-    setMessages((m) => [...m, userMsg]);
+    setMessages((m) => [...m, { role: "user", content: msg, agent }]);
     setStreaming(true);
-
-    let reply = "";
-    const placeholder: Message = { role: "assistant", content: "", agent };
+    const placeholder: Message = { role: "assistant", content: "", agent, loading: true };
     setMessages((m) => [...m, placeholder]);
 
     try {
-      for await (const chunk of streamChat(repoId, msg, agent)) {
-        reply = chunk.content;
-        setMessages((m) => [...m.slice(0, -1), { ...placeholder, content: reply }]);
+      for await (const event of streamChat(repoId, msg, agent)) {
+        if (event.event === "retrieval_done") {
+          setMessages((m) => [
+            ...m.slice(0, -1),
+            { ...placeholder, retrieval: { files: event.files, graph_edges: event.graph_edges, trace: event.trace } },
+          ]);
+        } else if (event.event === "answer" || event.content) {
+          setMessages((m) => [
+            ...m.slice(0, -1),
+            { ...placeholder, content: event.content, loading: false, retrieval: m[m.length - 1].retrieval },
+          ]);
+        }
       }
     } catch (e: any) {
-      setMessages((m) => [...m.slice(0, -1), { ...placeholder, content: `Error: ${e.message}` }]);
+      setMessages((m) => [...m.slice(0, -1), { ...placeholder, content: `Error: ${e.message}`, loading: false }]);
     }
     setStreaming(false);
   };
 
   return (
     <div className="h-full flex">
-      {/* Sidebar: agent selector */}
-      <div className="w-52 border-r border-synapse-border p-4 flex flex-col gap-2 bg-synapse-surface/50">
-        <p className="text-xs font-mono text-synapse-muted mb-2 uppercase tracking-wider">Mode</p>
-        {AGENTS.map(({ id, label, icon: Icon, desc, color }) => (
+      {/* Sidebar */}
+      <div className="w-52 border-r border-synapse-border p-4 flex flex-col gap-2 bg-synapse-surface/40 shrink-0">
+        <p className="text-[10px] font-mono text-synapse-muted mb-1 uppercase tracking-widest">Mode</p>
+        {AGENTS.map(({ id, label, icon: Icon, desc, accent }) => (
           <button
             key={id}
             onClick={() => setAgent(id)}
             className={clsx(
               "text-left p-3 rounded-lg border transition-all",
               agent === id
-                ? `border-${color}/40 bg-${color}/10`
-                : "border-synapse-border hover:border-synapse-border/80 bg-transparent"
+                ? `border-${accent}-400/40 bg-${accent}-400/10`
+                : "border-synapse-border hover:border-synapse-border/80"
             )}
           >
-            <div className={clsx("flex items-center gap-2 text-sm font-mono", agent === id ? `text-${color}` : "text-synapse-muted")}>
-              <Icon className="w-4 h-4" />
-              {label}
+            <div className={clsx("flex items-center gap-2 text-sm font-mono font-medium", agent === id ? `text-${accent}-400` : "text-synapse-muted")}>
+              <Icon className="w-3.5 h-3.5" /> {label}
             </div>
-            <p className="text-xs text-synapse-muted mt-1 leading-tight">{desc}</p>
+            <p className="text-[11px] text-synapse-muted mt-1 leading-snug">{desc}</p>
           </button>
         ))}
 
-        <div className="mt-4 border-t border-synapse-border pt-4">
-          <p className="text-xs font-mono text-synapse-muted mb-2 uppercase tracking-wider">Starters</p>
-          <div className="flex flex-col gap-1.5">
-            {STARTERS[agent].map((s) => (
-              <button
-                key={s}
-                onClick={() => send(s)}
-                className="text-left text-xs text-synapse-muted/70 hover:text-synapse-text font-mono leading-snug p-1.5 rounded hover:bg-synapse-border/30 transition-all"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
+        <div className="mt-4 border-t border-synapse-border pt-3">
+          <p className="text-[10px] font-mono text-synapse-muted mb-2 uppercase tracking-widest">Quick Start</p>
+          {STARTERS[agent].map((s) => (
+            <button key={s} onClick={() => send(s)}
+              className="block w-full text-left text-[11px] text-synapse-muted/70 hover:text-synapse-text font-mono py-1.5 px-1.5 rounded hover:bg-synapse-border/30 transition-all leading-snug mb-0.5">
+              {s}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Chat area */}
-      <div className="flex-1 flex flex-col">
-        {/* Messages */}
+      {/* Chat */}
+      <div className="flex-1 flex flex-col min-w-0">
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center">
-              <Terminal className="w-12 h-12 text-synapse-border mb-4" />
-              <p className="text-synapse-muted font-mono text-sm">Select a mode and start asking.</p>
-              <p className="text-synapse-muted/50 text-xs mt-1">Context is retrieved from the indexed codebase.</p>
+            <div className="flex flex-col items-center justify-center h-full text-center opacity-50">
+              <Terminal className="w-10 h-10 text-synapse-border mb-3" />
+              <p className="text-synapse-muted font-mono text-sm">Ask anything about the codebase.</p>
+              <p className="text-synapse-muted/60 text-xs mt-1">Context retrieved from code + call graph.</p>
             </div>
           )}
+
           {messages.map((m, i) => (
             <div key={i} className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}>
               {m.role === "assistant" && (
-                <div className="w-7 h-7 rounded-full bg-synapse-cyan/10 border border-synapse-cyan/30 flex items-center justify-center mr-3 mt-1 flex-shrink-0">
-                  <Brain className="w-3.5 h-3.5 text-synapse-cyan" />
+                <div className="w-6 h-6 rounded-full bg-synapse-cyan/10 border border-synapse-cyan/30 flex items-center justify-center mr-2.5 mt-1 shrink-0">
+                  <Brain className="w-3 h-3 text-synapse-cyan" />
                 </div>
               )}
-              <div className={clsx(
-                "max-w-2xl rounded-xl px-4 py-3 text-sm leading-relaxed",
-                m.role === "user"
-                  ? "bg-synapse-cyan/10 border border-synapse-cyan/20 text-synapse-text font-mono"
-                  : "bg-synapse-surface border border-synapse-border text-synapse-text"
-              )}>
-                {m.role === "assistant" ? (
-                  <div className="prose prose-invert prose-sm max-w-none prose-code:text-synapse-cyan prose-code:font-mono prose-pre:bg-synapse-bg">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || "▊"}</ReactMarkdown>
+              <div className="max-w-2xl min-w-0">
+                {/* Retrieval trace badge */}
+                {m.role === "assistant" && m.retrieval && (
+                  <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                    <span className="text-[10px] font-mono text-synapse-muted uppercase tracking-wider">Retrieved:</span>
+                    {m.retrieval.files.slice(0, 4).map((f) => (
+                      <span key={f} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-synapse-cyan/10 border border-synapse-cyan/20 text-[10px] font-mono text-synapse-cyan">
+                        <FileCode className="w-2.5 h-2.5" /> {f.split("/").pop()}
+                      </span>
+                    ))}
+                    {m.retrieval.graph_edges > 0 && (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-synapse-green/10 border border-synapse-green/20 text-[10px] font-mono text-synapse-green">
+                        <GitBranch className="w-2.5 h-2.5" /> {m.retrieval.graph_edges} graph edges
+                      </span>
+                    )}
                   </div>
-                ) : m.content}
-                {m.role === "assistant" && streaming && i === messages.length - 1 && !m.content && (
-                  <Loader2 className="w-4 h-4 text-synapse-cyan animate-spin" />
                 )}
+                <div className={clsx(
+                  "rounded-xl px-4 py-3 text-sm leading-relaxed",
+                  m.role === "user"
+                    ? "bg-synapse-cyan/10 border border-synapse-cyan/20 text-synapse-text font-mono"
+                    : "bg-synapse-surface border border-synapse-border text-synapse-text"
+                )}>
+                  {m.role === "assistant" ? (
+                    m.loading && !m.content
+                      ? <div className="flex items-center gap-2 text-synapse-muted text-xs font-mono">
+                          <Loader2 className="w-3 h-3 animate-spin text-synapse-cyan" />
+                          {m.retrieval ? "Generating answer..." : "Retrieving context..."}
+                        </div>
+                      : <div className="prose prose-invert prose-sm max-w-none prose-code:text-synapse-cyan prose-code:font-mono prose-pre:bg-synapse-bg prose-pre:border prose-pre:border-synapse-border">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                        </div>
+                  ) : m.content}
+                </div>
               </div>
             </div>
           ))}
@@ -148,25 +180,21 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
 
         {/* Input */}
         <div className="border-t border-synapse-border p-4">
-          <div className="flex gap-3 items-end bg-synapse-surface border border-synapse-border rounded-xl p-3 focus-within:border-synapse-cyan/40 transition-colors">
+          <div className="flex gap-3 items-end bg-synapse-surface border border-synapse-border rounded-xl px-4 py-3 focus-within:border-synapse-cyan/40 transition-colors">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder={`${agent === "qa" ? "Ask about the codebase..." : agent === "debug" ? "Paste error or describe the bug..." : "What should I review?"}`}
+              placeholder={agent === "qa" ? "Ask about the codebase..." : agent === "debug" ? "Paste error or describe the bug..." : "What should I review?"}
               rows={1}
               className="flex-1 bg-transparent text-synapse-text font-mono text-sm resize-none focus:outline-none placeholder:text-synapse-muted/50 max-h-32"
-              style={{ fieldSizing: "content" } as any}
             />
-            <button
-              onClick={() => send()}
-              disabled={!input.trim() || streaming}
-              className="p-2 rounded-lg bg-synapse-cyan/10 border border-synapse-cyan/30 text-synapse-cyan hover:bg-synapse-cyan/20 transition-all disabled:opacity-30"
-            >
+            <button onClick={() => send()} disabled={!input.trim() || streaming}
+              className="p-2 rounded-lg bg-synapse-cyan/10 border border-synapse-cyan/30 text-synapse-cyan hover:bg-synapse-cyan/20 transition-all disabled:opacity-30 shrink-0">
               {streaming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             </button>
           </div>
-          <p className="text-xs text-synapse-muted/40 font-mono mt-2 text-center">Enter to send · Shift+Enter for newline</p>
+          <p className="text-[10px] text-synapse-muted/40 font-mono mt-2 text-center">Enter · Shift+Enter for newline</p>
         </div>
       </div>
     </div>

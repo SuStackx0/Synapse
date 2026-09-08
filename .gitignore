@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+.env.local
+.env.production
+
+# Docker
+.docker/
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Repos (user data)
+/repos/
