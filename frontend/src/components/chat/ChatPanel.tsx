@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type AgentType = "qa" | "debug" | "review";
-interface RetrievalTrace { anchors: string[]; intent: string; has_commits: boolean; trace: any[]; }
+interface RetrievalTrace { anchors: string[]; intent: string; has_commits: boolean; coverage: string; trace: any[]; }
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -71,7 +71,7 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
         if (event.event === "retrieval_done") {
           setMessages((m) => [
             ...m.slice(0, -1),
-            { ...placeholder, retrieval: { anchors: event.anchors || [], intent: event.intent || "semantic", has_commits: event.has_commits || false, trace: event.trace } },
+            { ...placeholder, retrieval: { anchors: event.anchors || [], intent: event.intent || "semantic", has_commits: event.has_commits || false, coverage: event.coverage || "", trace: event.trace } },
           ]);
         } else if (event.event === "answer" || event.content) {
           setMessages((m) => [
@@ -156,6 +156,14 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
                       <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-400/10 border border-yellow-400/20 text-[10px] font-mono text-yellow-400">
                         <GitBranch className="w-2.5 h-2.5" /> git history
                       </span>
+                    )}
+                    {m.retrieval.coverage && (
+                      <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                        m.retrieval.coverage === "complete" ? "text-synapse-green border-synapse-green/30 bg-synapse-green/10" :
+                        m.retrieval.coverage === "partial" ? "text-synapse-cyan border-synapse-cyan/30 bg-synapse-cyan/10" :
+                        m.retrieval.coverage === "sparse" ? "text-yellow-400 border-yellow-400/30 bg-yellow-400/10" :
+                        "text-red-400 border-red-400/30 bg-red-400/10"
+                      }`}>{m.retrieval.coverage}</span>
                     )}
                   </div>
                 )}

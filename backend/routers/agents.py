@@ -35,6 +35,7 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         "context_sgl": "",
         "commit_context": "",
         "retrieval_trace": [],
+        "coverage": "",
     }
 
     async def stream_response():
@@ -48,7 +49,8 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         intent = result.get("intent", "semantic")
         has_commits = bool(result.get("commit_context"))
 
-        yield f"data: {json.dumps({'event': 'retrieval_done', 'anchors': anchors, 'intent': intent, 'has_commits': has_commits, 'trace': trace})}\n\n"
+        coverage = result.get("coverage", "")
+        yield f"data: {json.dumps({'event': 'retrieval_done', 'anchors': anchors, 'intent': intent, 'has_commits': has_commits, 'coverage': coverage, 'trace': trace})}\n\n"
 
         # Signal: answer
         ai_messages = [m for m in result["messages"] if hasattr(m, "content") and m.content != req.message]
@@ -88,6 +90,7 @@ async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
             "context_sgl": "",
             "commit_context": "",
             "retrieval_trace": [],
+            "coverage": "",
         }
         t0 = time.time()
         out = await graph.ainvoke(state)
