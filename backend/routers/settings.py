@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 import uuid
 
+from core.crypto import encrypt
 from core.database import get_db
 from core.models import LLMProvider
 
@@ -36,6 +37,7 @@ async def get_presets():
 @router.get("/providers")
 async def list_providers(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(LLMProvider))
+    # api_key is intentionally never returned (stored encrypted, write-only field).
     return [
         {"id": p.id, "name": p.name, "provider_type": p.provider_type,
          "base_url": p.base_url, "model": p.model, "is_active": p.is_active}
@@ -50,7 +52,8 @@ async def create_provider(req: ProviderCreate, db: AsyncSession = Depends(get_db
         name=req.name,
         provider_type=req.provider_type,
         base_url=req.base_url,
-        api_key=req.api_key or "",
+        # Encrypted at rest; decrypted only when constructing an LLM client.
+        api_key=encrypt(req.api_key or ""),
         model=req.model,
         is_active=False,
     )

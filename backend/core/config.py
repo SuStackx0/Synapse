@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -16,6 +17,12 @@ class Settings(BaseSettings):
 
     repos_base_path: str = "/repos"
     embed_model: str = "all-MiniLM-L6-v2"
+
+    # Secret used to encrypt credentials at rest (see core/crypto.py).
+    # Env var: SYNAPSE_SECRET_KEY. If unset, a dev-only key is generated on first
+    # run into backend/.synapse_secret_key (gitignored).
+    # PRODUCTION MUST set SYNAPSE_SECRET_KEY explicitly.
+    secret_key: str = Field(default="", validation_alias="SYNAPSE_SECRET_KEY")
 
     # Comma-separated list of browser origins allowed to call the API.
     # Never set this to "*" while credentialed requests are enabled.

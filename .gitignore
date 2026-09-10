@@ -28,3 +28,7 @@ docker-compose.override.yml
 
 # Repos (user data)
 /repos/
+
+# Local dev secret key (generated on first run if SYNAPSE_SECRET_KEY is unset)
+.synapse_secret_key
+backend/.synapse_secret_key
