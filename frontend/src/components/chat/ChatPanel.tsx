@@ -3,10 +3,12 @@ import { useState, useRef, useEffect } from "react";
 import {
   Brain, Send, Loader2, Terminal, FileCode, GitBranch, CheckCircle2,
   XCircle, FilePlus2, FileEdit, Sparkles, ChevronDown, ChevronRight,
+  HelpCircle, Plus,
 } from "lucide-react";
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { getSessionMessages, ChatMessageInfo } from "@/lib/api";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -21,6 +23,7 @@ interface WriteState {
   writingPath?: string;
   results: Record<string, WriteResult>;
 }
+interface ActivityStep { id: string; label: string; status: "active" | "done" | "error"; }
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -28,7 +31,8 @@ interface Message {
   retrieval?: RetrievalTrace;
   write?: WriteState;
   loading?: boolean;
-  stage?: string;
+  activity?: ActivityStep[];
+  isClarifying?: boolean;
 }
 
 const STARTERS = [
@@ -40,11 +44,11 @@ const STARTERS = [
   "Implement rate limiting on the login endpoint",
 ];
 
-async function* streamChat(repoId: string, message: string) {
+async function* streamChat(repoId: string, message: string, sessionId: string | null) {
   const res = await fetch(`${BASE}/agents/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo_id: repoId, message }),
+    body: JSON.stringify({ repo_id: repoId, message, session_id: sessionId }),
   });
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
@@ -115,6 +119,27 @@ function FileRow({ file, result }: { file: PlanFile; result?: WriteResult }) {
   );
 }
 
+function ActivityFeed({ activity }: { activity: ActivityStep[] }) {
+  if (!activity.length) return null;
+  return (
+    <div className="space-y-1.5 mb-2.5">
+      {activity.map((a, i) => (
+        <div key={a.id} className="flex items-start gap-2 text-xs font-mono">
+          <span className="mt-0.5 shrink-0">
+            {a.status === "active" && <Loader2 className="w-3 h-3 animate-spin text-synapse-cyan" />}
+            {a.status === "done" && <CheckCircle2 className="w-3 h-3 text-synapse-green" />}
+            {a.status === "error" && <XCircle className="w-3 h-3 text-red-400" />}
+          </span>
+          <span className={clsx(
+            a.status === "done" ? "text-synapse-muted/70" :
+            a.status === "error" ? "text-red-400/90" : "text-synapse-text"
+          )}>{a.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function WritePanel({ w }: { w: WriteState }) {
   return (
     <div className="mt-3 space-y-2.5 border border-synapse-purple/20 bg-synapse-purple/[0.03] rounded-xl p-3.5">
@@ -147,13 +172,70 @@ function WritePanel({ w }: { w: WriteState }) {
   );
 }
 
+function messagesFromHistory(rows: ChatMessageInfo[]): Message[] {
+  return rows.map((r) => {
+    if (r.role === "user") return { role: "user", content: r.content };
+    const meta = r.meta || {};
+    const msg: Message = { role: "assistant", content: r.content, mode: meta.mode, isClarifying: !!meta.is_clarifying };
+    if (meta.retrieval) {
+      msg.retrieval = {
+        anchors: meta.retrieval.anchors || [], intent: meta.retrieval.intent || "semantic",
+        has_commits: meta.retrieval.has_commits || false, coverage: meta.retrieval.coverage || "",
+        trace: meta.retrieval.trace || [],
+      };
+    }
+    if (meta.write_results) {
+      const results: Record<string, WriteResult> = {};
+      for (const wr of meta.write_results) results[wr.rel_path] = wr;
+      msg.write = {
+        results,
+        placementDir: meta.placement_dir,
+        plan: meta.write_results.map((wr: WriteResult) => ({ rel_path: wr.rel_path, op: wr.op, intent: "" })),
+        planSummary: meta.plan_summary,
+      };
+    }
+    return msg;
+  });
+}
+
 export default function ChatPanel({ repoId }: { repoId: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const storageKey = `synapse_session_${repoId}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const saved = typeof window !== "undefined" ? localStorage.getItem(storageKey) : null;
+      if (saved) {
+        try {
+          const rows = await getSessionMessages(saved);
+          if (!cancelled) {
+            setSessionId(saved);
+            setMessages(messagesFromHistory(rows));
+          }
+        } catch {
+          localStorage.removeItem(storageKey);
+        }
+      }
+      if (!cancelled) setHydrated(true);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoId]);
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  const startNewChat = () => {
+    localStorage.removeItem(storageKey);
+    setSessionId(null);
+    setMessages([]);
+  };
 
   const send = async (text?: string) => {
     const msg = text || input.trim();
@@ -161,45 +243,83 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
     setInput("");
     setMessages((m) => [...m, { role: "user", content: msg }]);
     setStreaming(true);
-    const placeholder: Message = { role: "assistant", content: "", loading: true, stage: "Thinking..." };
+    const placeholder: Message = { role: "assistant", content: "", loading: true, activity: [] };
     setMessages((m) => [...m, placeholder]);
 
     const update = (fn: (m: Message) => Message) =>
       setMessages((m) => [...m.slice(0, -1), fn(m[m.length - 1])]);
 
+    // Live, Claude-Code-style step trail: each call either updates an existing
+    // line (by id) in place or appends a new one, auto-completing the previous
+    // generic step when a new one starts.
+    const pushActivity = (id: string, label: string, status: ActivityStep["status"] = "active") => {
+      update((m) => {
+        const list = m.activity ? [...m.activity] : [];
+        const idx = list.findIndex((a) => a.id === id);
+        if (idx >= 0) {
+          list[idx] = { ...list[idx], label, status };
+        } else {
+          for (let j = 0; j < list.length; j++) {
+            if (list[j].status === "active" && !list[j].id.startsWith("file:") && list[j].id !== "clarify") {
+              list[j] = { ...list[j], status: "done" };
+            }
+          }
+          list.push({ id, label, status });
+        }
+        return { ...m, activity: list };
+      });
+    };
+
     try {
       const stepLabels: Record<string, string> = {
-        routing: "Understanding your request...",
-        retrieving: "Retrieving context from the graph...",
-        read: "Retrieving context...",
-        write: "Planning implementation...",
-        planning: "Planning the implementation...",
-        coding: "Writing code...",
-        applying: "Applying changes to disk...",
+        routing: "Classifying your request",
+        retrieving: "Searching the code graph",
+        read: "Searching the code graph",
+        write: "Preparing to implement",
+        planning: "Planning the change",
+        coding: "Generating code",
+        applying: "Applying changes to disk",
+        clarifying: "Waiting on a clarifying question",
       };
-      for await (const event of streamChat(repoId, msg)) {
-        if (event.event === "step") {
-          update((m) => ({ ...m, stage: stepLabels[event.stage] || m.stage }));
+      for await (const event of streamChat(repoId, msg, sessionId)) {
+        if (event.event === "session") {
+          if (event.session_id && event.session_id !== sessionId) {
+            setSessionId(event.session_id);
+            localStorage.setItem(storageKey, event.session_id);
+          }
+        } else if (event.event === "step") {
+          pushActivity(`step:${event.stage}`, stepLabels[event.stage] || event.stage);
         } else if (event.event === "mode") {
-          update((m) => ({ ...m, mode: event.mode, stage: event.mode === "write" ? "Planning implementation..." : "Retrieving context..." }));
+          update((m) => ({ ...m, mode: event.mode }));
         } else if (event.event === "context_ready") {
+          const dir = event.placement_dir || "repo root";
+          const n = event.exemplars?.length || 0;
+          pushActivity("context_ready", `Found placement — \`${dir}\`${n ? `, ${n} exemplar file(s)` : ""}`, "done");
           update((m) => ({
             ...m,
             write: { results: {}, ...m.write, placementDir: event.placement_dir, exemplars: event.exemplars },
           }));
+        } else if (event.event === "clarify") {
+          pushActivity("clarify", "Needs your input", "active");
+          update((m) => ({ ...m, isClarifying: true }));
         } else if (event.event === "plan_ready") {
+          pushActivity("plan_ready", `Plan ready — ${event.files?.length || 0} file(s)`, "done");
           update((m) => ({
             ...m,
-            stage: "Writing files...",
             write: { results: {}, ...m.write, plan: event.files, planSummary: event.summary },
           }));
         } else if (event.event === "writing_file") {
+          pushActivity(`file:${event.rel_path}`, `Writing \`${event.rel_path}\``, "active");
           update((m) => ({
             ...m,
-            stage: `Writing ${event.rel_path} (${event.index + 1}/${event.total})...`,
             write: { results: {}, ...m.write, writingPath: event.rel_path },
           }));
         } else if (event.event === "file_written") {
+          pushActivity(
+            `file:${event.rel_path}`,
+            event.ok ? `\`${event.rel_path}\` written (+${event.added}/-${event.removed})` : `\`${event.rel_path}\` failed — ${event.error}`,
+            event.ok ? "done" : "error"
+          );
           update((m) => ({
             ...m,
             write: {
@@ -208,21 +328,37 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
             },
           }));
         } else if (event.event === "retrieval_done") {
+          pushActivity("retrieval_done", `Context retrieved — ${event.intent}, coverage ${event.coverage}`, "done");
           update((m) => ({ ...m, retrieval: { anchors: event.anchors || [], intent: event.intent || "semantic", has_commits: event.has_commits || false, coverage: event.coverage || "", trace: event.trace } }));
         } else if (event.event === "answer") {
-          update((m) => ({ ...m, content: event.content, loading: false, stage: undefined }));
+          update((m) => {
+            const list = (m.activity || []).map((a) =>
+              a.status === "active" && a.id !== "clarify" ? { ...a, status: "done" as const } : a
+            );
+            return { ...m, content: event.content, loading: false, activity: list };
+          });
         }
       }
     } catch (e: any) {
-      update((m) => ({ ...m, content: `Error: ${e.message}`, loading: false, stage: undefined }));
+      update((m) => ({ ...m, content: `Error: ${e.message}`, loading: false }));
     }
     setStreaming(false);
   };
 
   return (
     <div className="h-full flex flex-col">
+      {messages.length > 0 && (
+        <div className="flex items-center justify-end px-4 py-2 border-b border-synapse-border shrink-0">
+          <button
+            onClick={startNewChat}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-synapse-muted hover:text-synapse-text hover:bg-synapse-border/30 text-xs font-mono transition-all"
+          >
+            <Plus className="w-3 h-3" /> New chat
+          </button>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
-        {messages.length === 0 && (
+        {hydrated && messages.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-center">
             <Terminal className="w-10 h-10 text-synapse-border mb-3" />
             <p className="text-synapse-muted font-mono text-sm">Ask, debug, review, or implement — just say what you need.</p>
@@ -244,8 +380,11 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
         {messages.map((m, i) => (
           <div key={i} className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}>
             {m.role === "assistant" && (
-              <div className="w-6 h-6 rounded-full bg-synapse-cyan/10 border border-synapse-cyan/30 flex items-center justify-center mr-2.5 mt-1 shrink-0">
-                <Brain className="w-3 h-3 text-synapse-cyan" />
+              <div className={clsx(
+                "w-6 h-6 rounded-full border flex items-center justify-center mr-2.5 mt-1 shrink-0",
+                m.isClarifying ? "bg-yellow-400/10 border-yellow-400/30" : "bg-synapse-cyan/10 border-synapse-cyan/30"
+              )}>
+                {m.isClarifying ? <HelpCircle className="w-3 h-3 text-yellow-400" /> : <Brain className="w-3 h-3 text-synapse-cyan" />}
               </div>
             )}
             <div className="max-w-2xl min-w-0 w-full">
@@ -277,23 +416,37 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
                 </div>
               )}
 
+              {m.role === "assistant" && m.isClarifying && !m.loading && (
+                <div className="flex items-center gap-1.5 mb-2">
+                  <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-400/10 border border-yellow-400/20 text-[10px] font-mono text-yellow-400">
+                    <HelpCircle className="w-2.5 h-2.5" /> needs your input
+                  </span>
+                </div>
+              )}
+
               <div className={clsx(
                 "rounded-xl px-4 py-3 text-sm leading-relaxed",
                 m.role === "user"
                   ? "bg-synapse-cyan/10 border border-synapse-cyan/20 text-synapse-text font-mono ml-auto inline-block max-w-full"
-                  : "bg-synapse-surface border border-synapse-border text-synapse-text"
+                  : m.isClarifying
+                    ? "bg-yellow-400/[0.06] border border-yellow-400/25 text-synapse-text"
+                    : "bg-synapse-surface border border-synapse-border text-synapse-text"
               )}>
                 {m.role === "assistant" ? (
-                  m.loading && !m.content ? (
-                    <div className="flex items-center gap-2 text-synapse-muted text-xs font-mono">
-                      <Loader2 className="w-3 h-3 animate-spin text-synapse-cyan" />
-                      {m.stage || "Working..."}
-                    </div>
-                  ) : (
-                    <div className="prose prose-invert prose-sm max-w-none prose-code:text-synapse-cyan prose-code:font-mono prose-pre:bg-synapse-bg prose-pre:border prose-pre:border-synapse-border">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                    </div>
-                  )
+                  <>
+                    {!!m.activity?.length && <ActivityFeed activity={m.activity} />}
+                    {m.loading && !m.content && !m.activity?.length && (
+                      <div className="flex items-center gap-2 text-synapse-muted text-xs font-mono">
+                        <Loader2 className="w-3 h-3 animate-spin text-synapse-cyan" />
+                        Thinking...
+                      </div>
+                    )}
+                    {m.content && (
+                      <div className="prose prose-invert prose-sm max-w-none prose-code:text-synapse-cyan prose-code:font-mono prose-pre:bg-synapse-bg prose-pre:border prose-pre:border-synapse-border">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                      </div>
+                    )}
+                  </>
                 ) : m.content}
               </div>
 

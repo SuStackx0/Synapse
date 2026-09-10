@@ -70,6 +70,7 @@ class AgentState(TypedDict):
     write_errors: list
     progress: list               # SSE-friendly progress events, drained by the router
     _pending_writes: list        # FileWrite dicts staged by coder, consumed by apply_writes
+    clarifying_question: str     # set when the model asks instead of guessing; ends the turn
 
 
 def initial_state(messages, repo_id: str, repo_root: str = "", agent_type: str = "qa",
@@ -86,6 +87,7 @@ def initial_state(messages, repo_id: str, repo_root: str = "", agent_type: str =
         "role_hint": [], "placement_dir": "", "plan": [], "plan_summary": "",
         "plan_attempts": 0, "write_results": [], "files_written": [],
         "write_errors": [], "progress": [], "_pending_writes": [],
+        "clarifying_question": "",
     }
 
 
@@ -263,22 +265,30 @@ async def retry_retrieval(state: AgentState) -> AgentState:
     }
 
 
+_CLARIFY_RULE = (
+    "If the request is genuinely ambiguous, or you lack information only the user can "
+    "provide (e.g. which of several plausible files/approaches they mean, a business rule "
+    "the codebase doesn't encode, a missing credential/config choice) — do not guess. "
+    "Reply with EXACTLY one line: 'CLARIFY: <your single, specific question>' and nothing else. "
+    "Only do this when actually blocked; prefer answering from the graph context whenever you can."
+)
+
 SYSTEM_PROMPTS = {
     "qa": (
         "You are a senior engineer with deep knowledge of this codebase. "
         "Answer using the SKL context (graph-derived symbol cards) provided. "
         "SKL: f=function af=async C=class >=calls <=called-by !=raises ENTRY=entrypoint DEAD=no-callers. "
-        "Cite file:line when relevant. Be precise and concise."
+        "Cite file:line when relevant. Be precise and concise.\n" + _CLARIFY_RULE
     ),
     "debug": (
         "You are an expert debugger. Use the codebase context to find the root cause. "
         "Structure: **ROOT CAUSE** → **EXPLANATION** → **FIX** (with code snippet). "
-        "Cite the exact file and line where the bug lives."
+        "Cite the exact file and line where the bug lives.\n" + _CLARIFY_RULE
     ),
     "review": (
         "You are a meticulous code reviewer. Use the symbol cards and call graph context provided. "
         "Format: numbered findings with 🔴 HIGH / 🟡 MEDIUM / 🟢 LOW severity. "
-        "End with a one-line verdict."
+        "End with a one-line verdict.\n" + _CLARIFY_RULE
     ),
 }
 
@@ -322,9 +332,21 @@ def make_llm_node(llm: BaseLanguageModel):
             *state["messages"],
         ]
         response = await llm.ainvoke(messages)
+        raw = (response.content or "").strip()
+        clarifying = ""
+        if raw.upper().startswith("CLARIFY:"):
+            clarifying = raw.split(":", 1)[1].strip()
+            response = AIMessage(content=clarifying)
+
         logger.info("llm_done", agent=agent_type, intent=state.get("intent"),
-                    coverage=state.get("coverage"), ctx_len=len(context_block))
-        return {**state, "messages": [*state["messages"], response]}
+                    coverage=state.get("coverage"), ctx_len=len(context_block),
+                    clarifying=bool(clarifying))
+
+        progress = state.get("progress", [])
+        if clarifying:
+            progress = [*progress, {"event": "clarify", "question": clarifying}]
+        return {**state, "messages": [*state["messages"], response],
+                "clarifying_question": clarifying, "progress": progress}
 
     return call_llm
 
@@ -362,7 +384,12 @@ _PLANNER_SYS = (
     ']}\n'
     "Rules: reuse the import/framework style shown in the exemplar files. "
     "Prefer creating new files over rewriting large existing ones. "
-    "Plan at most 3 files. rel_path must be relative to the repo root."
+    "Plan at most 3 files. rel_path must be relative to the repo root.\n"
+    "If the request is genuinely ambiguous or you're missing information only the user "
+    "can supply (which auth strategy, which of two plausible locations, an unstated "
+    "business rule) — do not guess a plan. Instead output ONLY: "
+    '{"question": "<your single, specific question>"}. '
+    "Only do this when actually blocked, not out of caution."
 )
 
 
@@ -382,18 +409,20 @@ def _extract_json(text: str) -> Optional[dict]:
 
 def make_planner_node(llm: BaseLanguageModel):
     async def planner(state: AgentState) -> AgentState:
-        query = state["messages"][-1].content if state["messages"] else ""
         messages = [
             SystemMessage(content=_PLANNER_SYS),
             SystemMessage(content=state.get("context_sgl", "")),
-            HumanMessage(content=query),
+            *state["messages"],  # full conversation — follow-ups ("also add tests for that") need it
         ]
         response = await llm.ainvoke(messages)
         raw = response.content or ""
         data = _extract_json(raw)
         plan = []
         summary = ""
-        if data and isinstance(data.get("files"), list):
+        question = ""
+        if data and isinstance(data.get("question"), str) and data["question"].strip():
+            question = data["question"].strip()
+        elif data and isinstance(data.get("files"), list):
             summary = data.get("summary", "")
             for f in data["files"][:3]:
                 rel_path = f.get("rel_path", "").strip()
@@ -402,25 +431,41 @@ def make_planner_node(llm: BaseLanguageModel):
                 if rel_path and op in ("create", "rewrite", "append"):
                     plan.append({"rel_path": rel_path, "op": op, "intent": intent})
 
-        logger.info("planner_done", plan_files=len(plan), raw_len=len(raw), raw_preview=raw[:500])
+        logger.info("planner_done", plan_files=len(plan), question=bool(question),
+                    raw_len=len(raw), raw_preview=raw[:500])
 
-        progress = [*state.get("progress", []), {
-            "event": "plan_ready", "summary": summary, "files": plan,
-        }]
+        progress = list(state.get("progress", []))
+        if question:
+            progress.append({"event": "clarify", "question": question})
+        else:
+            progress.append({"event": "plan_ready", "summary": summary, "files": plan})
+
         return {
             **state, "plan": plan, "plan_summary": summary,
+            "clarifying_question": question,
             "plan_attempts": state.get("plan_attempts", 0) + 1, "progress": progress,
         }
     return planner
 
 
-def grade_plan(state: AgentState) -> Literal["ok", "replan", "abandon"]:
-    decision = "ok" if state.get("plan") else (
-        "replan" if state.get("plan_attempts", 0) < 2 else "abandon"
-    )
+def grade_plan(state: AgentState) -> Literal["ok", "replan", "abandon", "ask"]:
+    if state.get("clarifying_question"):
+        decision = "ask"
+    elif state.get("plan"):
+        decision = "ok"
+    elif state.get("plan_attempts", 0) < 2:
+        decision = "replan"
+    else:
+        decision = "abandon"
     logger.info("grade_plan", decision=decision, plan_len=len(state.get("plan") or []),
                 attempts=state.get("plan_attempts", 0))
     return decision
+
+
+async def ask_user(state: AgentState) -> AgentState:
+    """The planner needs information only the user can supply — end the turn with a question."""
+    question = state.get("clarifying_question", "")
+    return {**state, "messages": [*state["messages"], AIMessage(content=question)]}
 
 
 _CODER_SYS = (
@@ -562,6 +607,7 @@ def build_agent_graph(llm: BaseLanguageModel) -> StateGraph:
     graph.add_node("apply", apply_writes)
     graph.add_node("summarize", summarize_write)
     graph.add_node("abandon", abandon_to_read)
+    graph.add_node("ask", ask_user)
 
     graph.set_entry_point("classify")
     graph.add_conditional_edges("classify", route_mode, {"read": "retrieve", "write": "plan_context"})
@@ -575,11 +621,12 @@ def build_agent_graph(llm: BaseLanguageModel) -> StateGraph:
 
     graph.add_edge("plan_context", "planner")
     graph.add_conditional_edges("planner", grade_plan, {
-        "ok": "coder", "replan": "planner", "abandon": "abandon",
+        "ok": "coder", "replan": "planner", "abandon": "abandon", "ask": "ask",
     })
     graph.add_conditional_edges("coder", grade_writes, {"ok": "apply", "abandon": "abandon"})
     graph.add_edge("apply", "summarize")
     graph.add_edge("summarize", END)
     graph.add_edge("abandon", "retrieve")
+    graph.add_edge("ask", END)
 
     return graph.compile()

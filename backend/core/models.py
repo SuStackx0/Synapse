@@ -35,6 +35,27 @@ class LLMProvider(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    repo_id: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String)
+    role: Mapped[str] = mapped_column(String)  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)  # mode, retrieval trace, write results
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BenchmarkResult(Base):
     __tablename__ = "benchmark_results"
 

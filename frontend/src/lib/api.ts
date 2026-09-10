@@ -39,6 +39,16 @@ export const activateProvider = (id: string) =>
 export const deleteProvider = (id: string) =>
   apiFetch(`/settings/providers/${id}`, { method: "DELETE" });
 
+// Sessions
+export const getSessions = (repoId: string) =>
+  apiFetch<ChatSessionInfo[]>(`/sessions/?repo_id=${encodeURIComponent(repoId)}`);
+export const createSession = (repoId: string, title?: string) =>
+  apiFetch<ChatSessionInfo>("/sessions/", { method: "POST", body: JSON.stringify({ repo_id: repoId, title }) });
+export const getSessionMessages = (sessionId: string) =>
+  apiFetch<ChatMessageInfo[]>(`/sessions/${sessionId}/messages`);
+export const deleteSession = (sessionId: string) =>
+  apiFetch(`/sessions/${sessionId}`, { method: "DELETE" });
+
 // Benchmark
 export const runBenchmark = (data: BenchmarkRequest) =>
   apiFetch<BenchmarkResult>("/agents/benchmark", { method: "POST", body: JSON.stringify(data) });
@@ -83,4 +93,11 @@ export interface BenchmarkRequest {
 export interface BenchmarkResult {
   id: string; response_a: string; response_b: string;
   latency_a: number; latency_b: number;
+}
+export interface ChatSessionInfo {
+  id: string; repo_id: string; title: string; created_at: string; updated_at: string;
+}
+export interface ChatMessageInfo {
+  id: string; session_id: string; role: "user" | "assistant";
+  content: string; meta: Record<string, any>; created_at: string;
 }

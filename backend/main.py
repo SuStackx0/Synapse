@@ -6,7 +6,7 @@ import structlog
 from core.database import init_db
 from ingestion.graph_builder import graph_builder
 from ingestion.embedder import embedder
-from routers import repos, agents, graph, health, settings
+from routers import repos, agents, graph, health, settings, sessions
 
 logger = structlog.get_logger()
 
@@ -42,6 +42,7 @@ app.include_router(agents.router)
 app.include_router(graph.router)
 app.include_router(health.router)
 app.include_router(settings.router)
+app.include_router(sessions.router)
 
 
 @app.get("/")
