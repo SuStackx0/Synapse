@@ -7,6 +7,7 @@ from core.logging_config import configure_logging, RequestLoggingMiddleware
 
 configure_logging()
 
+from core.config import settings as app_settings
 from core.database import init_db
 from ingestion.graph_builder import graph_builder
 from ingestion.embedder import embedder
@@ -34,10 +35,17 @@ app = FastAPI(
 )
 
 app.add_middleware(RequestLoggingMiddleware)
+
+# Credentialed CORS requires an explicit origin list; browsers reject
+# `Access-Control-Allow-Origin: *` together with credentials. Configure via
+# CORS_ALLOWED_ORIGINS (comma-separated).
+_cors_origins = app_settings.cors_origins
+_allow_credentials = "*" not in _cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

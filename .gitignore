@@ -18,6 +18,7 @@ build/
 
 # Docker
 .docker/
+docker-compose.override.yml
 
 # Editor
 .DS_Store

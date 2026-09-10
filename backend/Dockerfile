@@ -11,4 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Production-safe default: no auto-reload. Set RELOAD=true (docker-compose does
+# this for local dev) to enable uvicorn's file-watching reloader.
+CMD ["sh", "-c", "if [ \"$RELOAD\" = \"true\" ]; then exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload; else exec uvicorn main:app --host 0.0.0.0 --port 8000; fi"]
