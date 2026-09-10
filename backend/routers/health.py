@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, HTTPException
 from ingestion.ast_parser import walk_repo
 from ingestion.graph_builder import graph_builder
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/health", tags=["health"])
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "dist", "build"}
 
 
-def _compute_health(repo_path: str, parsed_files: list) -> dict:
+def _compute_health(repo_path: str, parsed_files: list, potentially_dead: list) -> dict:
     total_files = len(parsed_files)
     total_lines = sum(len(f.get("content", "").splitlines()) for f in parsed_files)
     total_functions = sum(len(f.get("functions", [])) for f in parsed_files)
@@ -26,21 +27,6 @@ def _compute_health(repo_path: str, parsed_files: list) -> dict:
         for f in parsed_files
         if len(f.get("content", "").splitlines()) > 300
     ]
-
-    # Dead code estimate: functions with no name reuse across other files
-    all_calls = set()
-    for f in parsed_files:
-        all_calls.update(f.get("calls", []))
-    all_functions = [
-        {"name": fn["name"], "file": f.get("rel_path", "?")}
-        for f in parsed_files
-        for fn in f.get("functions", [])
-    ]
-    potentially_dead = [
-        fn for fn in all_functions
-        if fn["name"] not in all_calls and not fn["name"].startswith("_")
-        and fn["name"] not in {"main", "test", "setup", "teardown"}
-    ][:20]
 
     # Language breakdown
     lang_counts: dict = {}
@@ -81,5 +67,6 @@ async def get_health(repo_id: str, db: AsyncSession = Depends(get_db)):
     if not repo.indexed:
         raise HTTPException(400, "Repo not yet indexed")
 
-    parsed = walk_repo(repo.path)
-    return _compute_health(repo.path, parsed)
+    parsed = await asyncio.get_event_loop().run_in_executor(None, walk_repo, repo.path)
+    potentially_dead = await graph_builder.find_dead_functions(repo_id)
+    return _compute_health(repo.path, parsed, potentially_dead)

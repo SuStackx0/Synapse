@@ -518,6 +518,31 @@ class GraphBuilder:
             rows = await result.data()
             return [r["s"] for r in rows]
 
+    async def find_dead_functions(self, repo_id: str, limit: int = 20) -> List[Dict]:
+        """
+        Functions with zero real incoming CALLS edges (confidence-filtered),
+        excluding entrypoints/API routes which are invoked externally and
+        therefore never show up as callees in the graph. This is the true
+        fan-in signal — computed live off CALLS edges rather than the
+        (currently unmaintained) fan_in property, matching the same
+        conf >= 0.5 threshold used by symbol_card/reverse_calls.
+        """
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (fn:Function {repo_id: $rid})
+                WHERE fn.is_entrypoint <> true AND fn.role <> 'API' AND fn.is_test <> true
+                OPTIONAL MATCH (caller:Function)-[r:CALLS]->(fn) WHERE r.conf >= 0.5
+                WITH fn, count(caller) AS fan_in
+                WHERE fan_in = 0
+                RETURN fn.name AS name, fn.qualname AS qualname, fn.rel_path AS file
+                ORDER BY fn.rel_path, fn.lineno
+                LIMIT $lim
+                """,
+                rid=repo_id, lim=limit,
+            )
+            return await result.data()
+
     # ── Write-path: graph-guided placement + exemplar selection ───────────
 
     async def find_placement_files(self, repo_id: str, roles: List[str], limit: int = 12) -> List[Dict]:
@@ -629,14 +654,20 @@ class GraphBuilder:
         return data[0] if data else {}
 
     async def get_graph_data(self, repo_id: str) -> Dict[str, Any]:
-        """For D3 visualization."""
+        """For D3 visualization.
+
+        Nodes are keyed by `uid` (repo_id|rel_path[#qualname]) rather than
+        Neo4j's internal id(n) — internal ids are not stable across a
+        restart or a reindex (clear_repo + rebuild), which would silently
+        break any saved/linked graph view.
+        """
         async with self._driver.session() as s:
             nodes_result = await s.run(
                 """
                 MATCH (n {repo_id: $rid})
                 RETURN n.name AS name, n.rel_path AS rel_path,
-                       labels(n)[0] AS type, id(n) AS id,
-                       n.lineno AS lineno, n.uid AS uid
+                       labels(n)[0] AS type, n.uid AS id,
+                       n.lineno AS lineno
                 LIMIT 500
                 """,
                 rid=repo_id,
@@ -644,7 +675,7 @@ class GraphBuilder:
             edges_result = await s.run(
                 """
                 MATCH (a {repo_id: $rid})-[r]->(b {repo_id: $rid})
-                RETURN id(a) AS source, id(b) AS target, type(r) AS rel
+                RETURN a.uid AS source, b.uid AS target, type(r) AS rel
                 LIMIT 1000
                 """,
                 rid=repo_id,
@@ -653,11 +684,11 @@ class GraphBuilder:
             edges = await edges_result.data()
         return {"nodes": nodes, "edges": edges}
 
-    async def get_node_context(self, repo_id: str, node_id: int) -> Dict[str, Any]:
+    async def get_node_context(self, repo_id: str, node_uid: str) -> Dict[str, Any]:
         async with self._driver.session() as s:
             result = await s.run(
-                "MATCH (n) WHERE id(n) = $nid OPTIONAL MATCH (n)-[r]-(m) RETURN n, collect({rel: type(r), node: m}) AS neighbors",
-                nid=node_id,
+                "MATCH (n {uid: $uid, repo_id: $rid}) OPTIONAL MATCH (n)-[r]-(m) RETURN n, collect({rel: type(r), node: m}) AS neighbors",
+                uid=node_uid, rid=repo_id,
             )
             data = await result.data()
         return data[0] if data else {}
