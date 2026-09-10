@@ -57,8 +57,12 @@ def safe_path(repo_root: str, rel_path: str) -> str:
     rel_parts = set(os.path.relpath(cand, root).split(os.sep))
     if rel_parts & DENY_PARTS:
         raise PathViolation(f"path in deny list: {rel_path!r}")
+    basename = os.path.basename(cand).lower()
     ext = os.path.splitext(cand)[1].lower()
-    if ext and ext not in ALLOWED_EXT:
+    # splitext only ever returns the last dotted segment, so a multi-dot
+    # allowlist entry like ".env.example" could never match via ext alone -
+    # check the full basename suffix too.
+    if ext and ext not in ALLOWED_EXT and not any(basename.endswith(a) for a in ALLOWED_EXT):
         raise PathViolation(f"extension not allowed: {rel_path!r}")
     return cand
 
