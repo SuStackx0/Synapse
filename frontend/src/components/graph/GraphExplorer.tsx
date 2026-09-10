@@ -75,9 +75,9 @@ export default function GraphExplorer({ repoId }: { repoId: string }) {
       })
       .attr("stroke-width", 1);
 
-    const node = g.append("g").selectAll("g")
+    const node = (g.append("g").selectAll("g")
       .data(nodes)
-      .join("g")
+      .join("g") as d3.Selection<SVGGElement, GraphNode, SVGGElement, unknown>)
       .attr("cursor", "pointer")
       .call(
         d3.drag<SVGGElement, GraphNode>()
@@ -109,7 +109,7 @@ export default function GraphExplorer({ repoId }: { repoId: string }) {
       node.attr("transform", (d: any) => `translate(${d.x},${d.y})`);
     });
 
-    return () => sim.stop();
+    return () => { sim.stop(); };
   }, [data, filter]);
 
   const resetZoom = () => {

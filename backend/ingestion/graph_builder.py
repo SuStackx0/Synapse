@@ -490,12 +490,13 @@ class GraphBuilder:
                 """
                 MATCH (s:Symbol {repo_id: $rid, role: $role})
                 RETURN s{.uid,.name,.qualname,.sig,.doc,.rel_path,.lineno,
-                         .role,.rank,.is_entrypoint}
+                         .role,.rank,.is_entrypoint} AS s
                 ORDER BY s.rank DESC LIMIT $lim
                 """,
                 rid=repo_id, role=role, lim=limit,
             )
-            return await result.data()
+            rows = await result.data()
+            return [r["s"] for r in rows]
 
     async def find_entrypoints(self, repo_id: str) -> List[Dict]:
         """API + entrypoint symbols — routes, mains, exposed hooks."""
@@ -504,12 +505,13 @@ class GraphBuilder:
                 """
                 MATCH (s:Symbol {repo_id: $rid})
                 WHERE s.is_entrypoint = true OR s.role = 'API'
-                RETURN s{.uid,.name,.qualname,.sig,.doc,.rel_path,.lineno,.decorators}
+                RETURN s{.uid,.name,.qualname,.sig,.doc,.rel_path,.lineno,.decorators} AS s
                 ORDER BY s.rank DESC LIMIT 40
                 """,
                 rid=repo_id,
             )
-            return await result.data()
+            rows = await result.data()
+            return [r["s"] for r in rows]
 
     # ── Retrieval queries ─────────────────────────────────────────────────
 
@@ -544,23 +546,26 @@ class GraphBuilder:
 
     async def reverse_calls(self, repo_id: str, function_name: str, max_depth: int = 3) -> Dict[str, Any]:
         """Who calls X — up to N hops, confidence-filtered."""
+        # Neo4j doesn't allow parameterized variable-length range in MATCH patterns;
+        # max_depth is always an internal int (never raw user text), safe to inline.
+        depth = max(1, min(int(max_depth), 6))
         async with self._driver.session() as s:
             result = await s.run(
-                """
-                MATCH (t:Symbol {repo_id: $rid, name: $name}) WITH t LIMIT 1
-                MATCH path = (c:Symbol)-[:CALLS*1..$depth]->(t)
+                f"""
+                MATCH (t:Symbol {{repo_id: $rid, name: $name}}) WITH t LIMIT 1
+                MATCH path = (c:Symbol)-[:CALLS*1..{depth}]->(t)
                 WHERE all(r IN relationships(path) WHERE r.conf >= 0.5)
-                WITH c, length(path) AS depth,
+                WITH c, t, length(path) AS depth,
                      reduce(x=1.0, r IN relationships(path) | x * r.conf) AS conf,
                      [n IN nodes(path) | n.name] AS chain
                 ORDER BY depth ASC, c.rank DESC LIMIT 40
-                RETURN collect({depth:depth, conf:conf, chain:chain,
+                RETURN collect({{depth:depth, conf:conf, chain:chain,
                                 qualname:c.qualname, sig:c.sig, doc:c.doc,
                                 at:c.rel_path + ':' + toString(c.lineno),
-                                is_entrypoint:c.is_entrypoint}) AS callers,
-                       t{.qualname,.sig,.doc,.rel_path,.lineno} AS target
+                                is_entrypoint:c.is_entrypoint}}) AS callers,
+                       t{{.qualname,.sig,.doc,.rel_path,.lineno}} AS target
                 """,
-                rid=repo_id, name=function_name, depth=max_depth,
+                rid=repo_id, name=function_name,
             )
             data = await result.data()
         return data[0] if data else {}
