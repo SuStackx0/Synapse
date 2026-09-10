@@ -22,6 +22,7 @@ interface WriteState {
   planSummary?: string;
   writingPath?: string;
   results: Record<string, WriteResult>;
+  liveTail?: Record<string, { tail: string; lines: number; chars: number }>;
 }
 interface ActivityStep { id: string; label: string; status: "active" | "done" | "error"; }
 interface Message {
@@ -74,7 +75,7 @@ function opIcon(op: string, ok: boolean) {
     : <FileEdit className="w-3.5 h-3.5 text-synapse-cyan" />;
 }
 
-function FileRow({ file, result }: { file: PlanFile; result?: WriteResult }) {
+function FileRow({ file, result, live }: { file: PlanFile; result?: WriteResult; live?: { tail: string; lines: number; chars: number } }) {
   const [open, setOpen] = useState(false);
   const pending = !result;
   return (
@@ -92,6 +93,9 @@ function FileRow({ file, result }: { file: PlanFile; result?: WriteResult }) {
           opIcon(file.op, result.ok)
         )}
         <span className="font-mono text-xs text-synapse-text truncate flex-1">{file.rel_path}</span>
+        {pending && live && (
+          <span className="text-[10px] font-mono text-synapse-cyan/70 shrink-0">{live.lines}L</span>
+        )}
         {result && result.ok && (
           <span className="text-[10px] font-mono shrink-0">
             <span className="text-synapse-green">+{result.added}</span>{" "}
@@ -104,6 +108,12 @@ function FileRow({ file, result }: { file: PlanFile; result?: WriteResult }) {
         {result?.diff && (open ? <ChevronDown className="w-3 h-3 text-synapse-muted shrink-0" /> : <ChevronRight className="w-3 h-3 text-synapse-muted shrink-0" />)}
       </button>
       <p className="px-3 pb-2 -mt-0.5 text-[11px] text-synapse-muted font-mono truncate">{file.intent}</p>
+      {pending && live?.tail && (
+        <pre className="text-[10px] font-mono leading-relaxed px-3 py-2 bg-synapse-bg border-t border-synapse-border overflow-hidden max-h-24 text-synapse-green/80 whitespace-pre-wrap break-all">
+          {live.tail}
+          <span className="inline-block w-1.5 h-3 bg-synapse-cyan/70 align-middle ml-0.5 animate-pulse" />
+        </pre>
+      )}
       {open && result?.diff && (
         <pre className="text-[10px] font-mono leading-relaxed px-3 py-2 bg-synapse-bg border-t border-synapse-border overflow-x-auto max-h-64 overflow-y-auto">
           {result.diff.split("\n").map((l, i) => (
@@ -164,7 +174,7 @@ function WritePanel({ w }: { w: WriteState }) {
       {!!w.plan?.length && (
         <div className="space-y-1.5 pt-1">
           {w.plan.map((f) => (
-            <FileRow key={f.rel_path} file={f} result={w.results[f.rel_path]} />
+            <FileRow key={f.rel_path} file={f} result={w.results[f.rel_path]} live={w.liveTail?.[f.rel_path]} />
           ))}
         </div>
       )}
@@ -314,6 +324,20 @@ export default function ChatPanel({ repoId }: { repoId: string }) {
             ...m,
             write: { results: {}, ...m.write, writingPath: event.rel_path },
           }));
+        } else if (event.event === "coding_progress") {
+          // Real token-level progress from the LLM as it writes this specific file —
+          // growing line/char count and a live tail of the actual code, not a spinner
+          // frozen for 20 seconds.
+          if (!event.done) {
+            pushActivity(`file:${event.rel_path}`, `Writing \`${event.rel_path}\` — ${event.lines} line${event.lines === 1 ? "" : "s"} (${event.chars} chars)`, "active");
+            update((m) => ({
+              ...m,
+              write: {
+                results: {}, ...m.write,
+                liveTail: { ...(m.write?.liveTail || {}), [event.rel_path]: { tail: event.tail, lines: event.lines, chars: event.chars } },
+              },
+            }));
+          }
         } else if (event.event === "file_written") {
           pushActivity(
             `file:${event.rel_path}`,

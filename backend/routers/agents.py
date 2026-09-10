@@ -106,7 +106,15 @@ async def chat(req: ChatRequest, bg: BackgroundTasks, db: AsyncSession = Depends
         final_state = state
 
         try:
-            async for snapshot in graph.astream(state, stream_mode="values"):
+            async for mode_name, payload in graph.astream(state, stream_mode=["values", "custom"]):
+                if mode_name == "custom":
+                    # Token-level progress from inside the coder node (get_stream_writer) —
+                    # this is what lets the UI show growing char/line counts while a file
+                    # is still being generated, instead of a spinner frozen for 20s.
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    continue
+
+                snapshot = payload
                 final_state = snapshot
 
                 # Live "which node just ran" signal — the Claude-Code-style step trail.

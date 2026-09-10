@@ -477,6 +477,12 @@ _CODER_SYS = (
 
 def make_coder_node(llm: BaseLanguageModel):
     async def coder(state: AgentState) -> AgentState:
+        from langgraph.config import get_stream_writer
+        try:
+            writer = get_stream_writer()
+        except Exception:
+            writer = None
+
         write_ctx_block = state.get("context_sgl", "")
         pending: list[FileWrite] = []
         progress = list(state.get("progress", []))
@@ -496,11 +502,33 @@ def make_coder_node(llm: BaseLanguageModel):
                     f"Write the complete file content now."
                 )),
             ]
+            content = ""
             try:
-                response = await llm.ainvoke(messages)
-                content = response.content or ""
+                # Stream tokens as they generate — this is what actually lets the UI
+                # show "writing line 40 of ~..." instead of a spinner frozen for 20s.
+                last_emit_len = 0
+                async for chunk in llm.astream(messages):
+                    piece = getattr(chunk, "content", "") or ""
+                    if not piece:
+                        continue
+                    content += piece
+                    if writer and len(content) - last_emit_len >= 24:
+                        last_emit_len = len(content)
+                        lines = content.count("\n") + 1
+                        writer({
+                            "event": "coding_progress", "rel_path": task["rel_path"],
+                            "chars": len(content), "lines": lines,
+                            "tail": content[-160:],
+                        })
+
                 code = _extract_code_block(content)
                 logger.info("coder_done", rel_path=task["rel_path"], raw_len=len(content), code_len=len(code))
+                if writer:
+                    writer({
+                        "event": "coding_progress", "rel_path": task["rel_path"],
+                        "chars": len(content), "lines": content.count("\n") + 1,
+                        "tail": content[-160:], "done": True,
+                    })
                 if code.strip():
                     pending.append(FileWrite(rel_path=task["rel_path"], op=task["op"],
                                               content=code, reason=task.get("intent", "")))
