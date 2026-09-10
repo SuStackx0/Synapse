@@ -513,6 +513,59 @@ class GraphBuilder:
             rows = await result.data()
             return [r["s"] for r in rows]
 
+    # ── Write-path: graph-guided placement + exemplar selection ───────────
+
+    async def find_placement_files(self, repo_id: str, roles: List[str], limit: int = 12) -> List[Dict]:
+        """
+        Score files by role density + entrypoint presence, for the write path.
+        Highest-scoring file's directory = where new code should go;
+        the files themselves = exemplars the coder should read in full.
+        """
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (f:File {repo_id: $rid})-[:DEFINES]->(s:Symbol)
+                WHERE s.role IN $roles
+                WITH f,
+                     count(s) AS role_syms,
+                     sum(CASE WHEN s.is_entrypoint THEN 1 ELSE 0 END) AS entries
+                RETURN f.rel_path AS path, f.loc AS loc, role_syms, entries,
+                       (role_syms * 1.0 + entries * 2.0) AS score
+                ORDER BY score DESC, loc ASC
+                LIMIT $lim
+                """,
+                rid=repo_id, roles=roles, lim=limit,
+            )
+            return await result.data()
+
+    async def find_wiring_files(self, repo_id: str) -> List[Dict]:
+        """The file(s) that register routers/apps — needs editing to wire in new code."""
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                MATCH (f:File {repo_id: $rid})
+                WHERE f.rel_path ENDS WITH 'main.py' OR f.rel_path ENDS WITH 'app.py'
+                   OR f.rel_path ENDS WITH '__init__.py' OR f.rel_path ENDS WITH 'urls.py'
+                RETURN f.rel_path AS path, f.loc AS loc
+                ORDER BY f.loc ASC LIMIT 3
+                """,
+                rid=repo_id,
+            )
+            return await result.data()
+
+    async def file_imports(self, repo_id: str, paths: List[str]) -> Dict[str, List[str]]:
+        async with self._driver.session() as s:
+            result = await s.run(
+                """
+                UNWIND $paths AS p
+                MATCH (f:File {repo_id: $rid, rel_path: p})-[:IMPORTS]->(m:Module)
+                RETURN p AS path, collect(DISTINCT m.name) AS imports
+                """,
+                rid=repo_id, paths=paths,
+            )
+            rows = await result.data()
+        return {r["path"]: r["imports"] for r in rows}
+
     # ── Retrieval queries ─────────────────────────────────────────────────
 
     async def symbol_card(self, repo_id: str, function_name: str) -> Dict[str, Any]:

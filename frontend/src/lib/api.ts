@@ -15,8 +15,8 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
 // Repos
 export const getRepos = () => apiFetch<Repo[]>("/repos/");
 export const getRepo = (id: string) => apiFetch<Repo>(`/repos/${id}`);
-export const addLocalRepo = (path: string, name?: string) =>
-  apiFetch("/repos/local", { method: "POST", body: JSON.stringify({ path, name }) });
+export const addLocalRepo = (path: string, name?: string, inPlace?: boolean) =>
+  apiFetch("/repos/local", { method: "POST", body: JSON.stringify({ path, name, in_place: !!inPlace }) });
 export const addGithubRepo = (url: string, pat: string, name?: string) =>
   apiFetch("/repos/github", { method: "POST", body: JSON.stringify({ url, pat, name }) });
 export const deleteRepo = (id: string) => apiFetch(`/repos/${id}`, { method: "DELETE" });
@@ -45,33 +45,15 @@ export const runBenchmark = (data: BenchmarkRequest) =>
 export const voteBenchmark = (benchId: string, winner: "a" | "b") =>
   apiFetch(`/agents/benchmark/${benchId}/vote?winner=${winner}`, { method: "POST" });
 
-// Chat (streaming)
-export async function* streamChat(repoId: string, message: string, agentType: string) {
-  const res = await fetch(`${BASE}/agents/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo_id: repoId, message, agent_type: agentType }),
-  });
-  const reader = res.body!.getReader();
-  const dec = new TextDecoder();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const lines = dec.decode(value).split("\n");
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        try {
-          yield JSON.parse(line.slice(6));
-        } catch {}
-      }
-    }
-  }
-}
-
 // Types
 export interface Repo {
   id: string; name: string; source: string; indexed: boolean;
   file_count: number; language: string; created_at: string;
+  path?: string;
+  indexing_stage?: string;
+  indexing_detail?: string;
+  indexing_pct?: number;
+  indexing_error?: string;
 }
 export interface GraphNode {
   id: number; name: string; type: string; rel_path?: string;

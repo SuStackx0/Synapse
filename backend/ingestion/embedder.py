@@ -169,7 +169,7 @@ class Embedder:
         col = self._sym_col(repo_id)
         await self._ensure_collection(col)
         vector = self._embed([query])[0]
-        results = await self._client.search(col, query_vector=vector, limit=limit, with_payload=True)
+        response = await self._client.query_points(col, query=vector, limit=limit, with_payload=True)
         return [
             {
                 "uid": r.payload.get("uid"),
@@ -178,7 +178,7 @@ class Embedder:
                 "rel_path": r.payload.get("rel_path"),
                 "kind": r.payload.get("kind"),
             }
-            for r in results
+            for r in response.points
         ]
 
     async def search_commits(self, repo_id: str, query: str, limit: int = 8) -> List[Dict]:
@@ -186,7 +186,7 @@ class Embedder:
         col = self._commit_col(repo_id)
         await self._ensure_collection(col)
         vector = self._embed([query])[0]
-        results = await self._client.search(col, query_vector=vector, limit=limit, with_payload=True)
+        response = await self._client.query_points(col, query=vector, limit=limit, with_payload=True)
         return [
             {
                 "uid": r.payload.get("uid"),
@@ -196,7 +196,7 @@ class Embedder:
                 "date": r.payload.get("date"),
                 "author": r.payload.get("author"),
             }
-            for r in results
+            for r in response.points
         ]
 
     async def delete_collections(self, repo_id: str):

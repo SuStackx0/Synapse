@@ -1,58 +1,114 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from pydantic import BaseModel
-from typing import Literal
+from typing import Literal, Optional
 import json, time, asyncio
 
-from core.database import get_db
-from agents.graph import build_agent_graph, AgentState
+from core.database import get_db, SessionLocal
+from core.models import Repository
+from agents.graph import build_agent_graph, initial_state, invalidate_repo_map
 from agents.llm_factory import get_active_llm
 from langchain_core.messages import HumanMessage
+import structlog
 
+logger = structlog.get_logger()
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 class ChatRequest(BaseModel):
     repo_id: str
     message: str
-    agent_type: Literal["qa", "debug", "review"] = "qa"
+    agent_type: Optional[Literal["qa", "debug", "review"]] = None
     history: list[dict] = []
 
 
+async def _reindex_after_write(repo_id: str, repo_root: str):
+    """Background reindex so the next query answers from the updated graph."""
+    from ingestion.ast_parser import walk_repo
+    from ingestion.graph_builder import graph_builder
+    from ingestion.embedder import embedder
+    try:
+        parsed = await asyncio.get_event_loop().run_in_executor(None, walk_repo, repo_root)
+        await graph_builder.build_graph(repo_id, parsed)
+        await embedder.index_symbols(repo_id, parsed)
+        logger.info("reindexed_after_write", repo_id=repo_id, files=len(parsed))
+    except Exception as e:
+        logger.error("reindex_after_write_failed", repo_id=repo_id, error=str(e))
+
+
 @router.post("/chat")
-async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
+async def chat(req: ChatRequest, bg: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Repository).where(Repository.id == req.repo_id))
+    repo = result.scalar_one_or_none()
+    if not repo:
+        raise HTTPException(404, "Repo not found")
+
     llm = await get_active_llm(db)
     graph = build_agent_graph(llm)
 
     messages = [HumanMessage(content=req.message)]
-    state: AgentState = {
-        "messages": messages,
-        "repo_id": req.repo_id,
-        "agent_type": req.agent_type,
-        "intent": "",
-        "anchors": [],
-        "context_sgl": "",
-        "commit_context": "",
-        "retrieval_trace": [],
-        "coverage": "",
-    }
+    state = initial_state(
+        messages, repo_id=req.repo_id, repo_root=repo.path,
+        agent_type=req.agent_type or "qa", auto_apply=True,
+    )
 
     async def stream_response():
-        # Signal: retrieval starting
         yield f"data: {json.dumps({'event': 'retrieval_start'})}\n\n"
 
-        result = await graph.ainvoke(state)
+        seen_progress = 0
+        mode_sent = False
+        node_seen = 0
+        final_state = state
 
-        trace = result.get("retrieval_trace", [])
-        anchors = result.get("anchors", [])
-        intent = result.get("intent", "semantic")
-        has_commits = bool(result.get("commit_context"))
+        try:
+            async for snapshot in graph.astream(state, stream_mode="values"):
+                final_state = snapshot
 
-        coverage = result.get("coverage", "")
-        yield f"data: {json.dumps({'event': 'retrieval_done', 'anchors': anchors, 'intent': intent, 'has_commits': has_commits, 'coverage': coverage, 'trace': trace})}\n\n"
+                # Live "which node just ran" signal — the Claude-Code-style step trail.
+                node_seen += 1
+                stage = snapshot.get("mode") or "routing"
+                if snapshot.get("plan") and not snapshot.get("write_results"):
+                    stage = "planning"
+                elif snapshot.get("_pending_writes") is not None and not snapshot.get("write_results"):
+                    stage = "coding"
+                elif snapshot.get("write_results"):
+                    stage = "applying"
+                elif snapshot.get("context_sgl") and snapshot.get("mode") == "read":
+                    stage = "retrieving"
+                yield f"data: {json.dumps({'event': 'step', 'stage': stage})}\n\n"
 
-        # Signal: answer
+                if not mode_sent and snapshot.get("mode"):
+                    mode_sent = True
+                    yield f"data: {json.dumps({'event': 'mode', 'mode': snapshot.get('mode'), 'agent_type': snapshot.get('agent_type'), 'decided_by': snapshot.get('mode_decided_by')})}\n\n"
+
+                # Replay any new progress events (context_ready / plan_ready /
+                # writing_file / file_written / implement_done) as soon as they land.
+                prog = snapshot.get("progress", [])
+                for evt in prog[seen_progress:]:
+                    yield f"data: {json.dumps(evt)}\n\n"
+                seen_progress = len(prog)
+        except Exception as e:
+            logger.error("agent_stream_failed", repo_id=req.repo_id, error=str(e), exc_info=True)
+            yield f"data: {json.dumps({'event': 'answer', 'content': f'Something went wrong while processing this: {e}', 'done': True})}\n\n"
+            return
+
+        result = final_state
+        mode = result.get("mode", "read")
+
+        if mode == "write" and result.get("files_written"):
+            bg.add_task(_reindex_after_write, req.repo_id, repo.path)
+            invalidate_repo_map(req.repo_id)
+
+        if result.get("retrieval_trace"):
+            trace = result.get("retrieval_trace", [])
+            anchors = result.get("anchors", [])
+            intent = result.get("intent", "semantic")
+            has_commits = bool(result.get("commit_context"))
+            coverage = result.get("coverage", "")
+            yield f"data: {json.dumps({'event': 'retrieval_done', 'anchors': anchors, 'intent': intent, 'has_commits': has_commits, 'coverage': coverage, 'trace': trace})}\n\n"
+
         ai_messages = [m for m in result["messages"] if hasattr(m, "content") and m.content != req.message]
         content = ai_messages[-1].content if ai_messages else "No response generated."
         yield f"data: {json.dumps({'event': 'answer', 'content': content, 'done': True})}\n\n"
@@ -69,10 +125,13 @@ class BenchmarkRequest(BaseModel):
 
 @router.post("/benchmark")
 async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
-    from sqlalchemy import select
     from core.models import LLMProvider, BenchmarkResult
     from agents.llm_factory import build_llm_from_provider
     import uuid
+
+    repo_result = await db.execute(select(Repository).where(Repository.id == req.repo_id))
+    repo = repo_result.scalar_one_or_none()
+    repo_root = repo.path if repo else ""
 
     async def run_one(provider_id: str):
         result = await db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
@@ -81,24 +140,13 @@ async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
             return "", 0.0
         llm = build_llm_from_provider(provider)
         graph = build_agent_graph(llm)
-        state: AgentState = {
-            "messages": [HumanMessage(content=req.query)],
-            "repo_id": req.repo_id,
-            "agent_type": "qa",
-            "intent": "",
-            "anchors": [],
-            "context_sgl": "",
-            "commit_context": "",
-            "retrieval_trace": [],
-            "coverage": "",
-        }
+        state = initial_state([HumanMessage(content=req.query)], repo_id=req.repo_id, repo_root=repo_root)
         t0 = time.time()
         out = await graph.ainvoke(state)
         latency = time.time() - t0
         ai_msgs = [m for m in out["messages"] if hasattr(m, "content") and m.content != req.query]
         return (ai_msgs[-1].content if ai_msgs else ""), latency
 
-    # Run both providers concurrently
     (resp_a, lat_a), (resp_b, lat_b) = await asyncio.gather(
         run_one(req.provider_a_id),
         run_one(req.provider_b_id),
@@ -128,7 +176,6 @@ async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
 
 @router.post("/benchmark/{bench_id}/vote")
 async def vote(bench_id: str, winner: Literal["a", "b"], db: AsyncSession = Depends(get_db)):
-    from sqlalchemy import select
     from core.models import BenchmarkResult
     result = await db.execute(select(BenchmarkResult).where(BenchmarkResult.id == bench_id))
     bench = result.scalar_one_or_none()

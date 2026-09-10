@@ -278,9 +278,14 @@ def parse_file(path: str) -> Dict[str, Any]:
 
 def walk_repo(repo_path: str, max_files: int = 500) -> List[Dict[str, Any]]:
     results = []
-    skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+    skip_dirs = {"node_modules", "__pycache__", "venv", "dist", "build"}
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        # Skip agent-tooling / VCS / build dirs entirely, and any dotdir (worktrees,
+        # editor config, etc.) — they're not source and can hide duplicated trees
+        # (e.g. .claude/worktrees/*) that blow up indexing time.
+        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+        if len(results) >= max_files:
+            break
         for fname in files:
             if len(results) >= max_files:
                 break

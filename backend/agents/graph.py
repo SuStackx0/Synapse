@@ -1,108 +1,92 @@
 """
-LangGraph agent — graph-augmented retrieval.
+LangGraph agent — graph-augmented retrieval AND graph-guided implementation.
 
-Retrieval principle (Opus):
+Read path (unchanged):
   Graph (Neo4j) = structure — all text that reaches the LLM
   Vector (Qdrant) = entity linker — returns UIDs only, never text
-  Disk = last-mile source bodies, fetched only when needed
+  classify -> retrieve -> grade -> llm | widen | retry -> llm
 
-Query routing (lexical-first):
-  Step 0: fulltext sym_ft — identifier present? → Neo4j only, no Qdrant call
-  Step 1: role/domain → subsystem reader
-  Step 2: semantic → Qdrant UIDs → Neo4j cards
-  Step 3: history → Qdrant commits → metadata
+Write path (new):
+  classify -> plan_context (graph picks placement + exemplars, no LLM)
+           -> planner (1 LLM call -> file-level task list)
+           -> coder (1 LLM call per file -> full file content)
+           -> apply (validate + write to disk, no LLM)
+           -> summarize (deterministic markdown, no LLM)
 
-Coverage tiers: complete | partial | sparse | empty
+No user-facing mode tabs: classify_mode() infers read vs write from the
+query text alone, so a single chat box serves ask/debug/review/implement.
 """
-from typing import TypedDict, Annotated, Sequence, Literal
+from typing import TypedDict, Annotated, Sequence, Literal, Optional
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 from langchain_core.language_models import BaseLanguageModel
 from ingestion.embedder import embedder
-from ingestion.graph_builder import graph_builder, serialize_cards_to_sgl, SKL_LEGEND
+from ingestion.graph_builder import graph_builder, serialize_cards_to_sgl
+from agents.intent import (
+    classify_mode, classify_intent, extract_anchors, infer_agent_type, infer_roles,
+)
+from agents.write_context import build_write_context, render_write_context
+from agents.write_tool import FileWrite, apply_write, preview_write
+import json
 import operator
 import re
 import structlog
 
 logger = structlog.get_logger()
 
-_IDENT_RE = re.compile(
-    r'`([^`]+)`|"([A-Za-z_]\w*(?:\.\w+)*)"'
-    r'|\b([A-Z][a-zA-Z0-9]{2,})\b|\b([a-z_][a-z0-9_]{2,})\b'
-)
 
-# Role keyword → role tag for subsystem queries
-_ROLE_KEYWORDS = {
-    "auth": "AUTH", "authentication": "AUTH", "login": "AUTH",
-    "token": "AUTH", "jwt": "AUTH", "permission": "AUTH",
-    "database": "DB", "db": "DB", "query": "DB", "sql": "DB",
-    "route": "API", "endpoint": "API", "api": "API", "http": "API",
-    "config": "CONFIG", "setting": "CONFIG", "env": "CONFIG",
-    "test": "TEST", "spec": "TEST",
-}
+class FileTask(TypedDict):
+    rel_path: str
+    op: str          # create | rewrite | append
+    intent: str
 
 
 class AgentState(TypedDict):
+    # shared
     messages: Annotated[Sequence[BaseMessage], operator.add]
     repo_id: str
-    agent_type: str             # qa | debug | review
-    intent: str                 # structural | historical | semantic | subsystem | entrypoints
-    anchors: list[str]          # resolved symbol names
-    context_sgl: str            # SKL serialized context from Neo4j
-    commit_context: str         # serialized commit hits
-    retrieval_trace: list[dict]
-    coverage: str               # complete | partial | sparse | empty
+    repo_root: str
+    agent_type: str
+    mode: str                    # read | write
+    mode_decided_by: str
+    auto_apply: bool
+
+    # read path
+    intent: str
+    anchors: list
+    context_sgl: str
+    commit_context: str
+    retrieval_trace: list
+    coverage: str
+
+    # write path
+    role_hint: list
+    placement_dir: str
+    plan: list
+    plan_summary: str
+    plan_attempts: int
+    write_results: list
+    files_written: list
+    write_errors: list
+    progress: list               # SSE-friendly progress events, drained by the router
+    _pending_writes: list        # FileWrite dicts staged by coder, consumed by apply_writes
 
 
-# ── Intent classification ─────────────────────────────────────────────────
-
-def classify_intent(message: str) -> tuple[str, str | None]:
-    """
-    Returns (intent, role_hint).
-    Priority: entrypoints > historical > structural > subsystem > semantic.
-    """
-    msg = message.lower()
-
-    # Entrypoints — checked first so "routes/endpoints" doesn't fall to subsystem
-    if any(w in msg for w in {"entrypoint", "entry point", "all routes", "all endpoints",
-                               "list routes", "list endpoints", "what routes", "what endpoints",
-                               "api routes", "where does it start"}):
-        return "entrypoints", None
-
-    # Historical
-    historical = {"commit", "when did", "who added", "changed", "history",
-                  "last month", "introduced", "removed", "why was"}
-    for h in historical:
-        if h in msg:
-            return "historical", None
-
-    # Structural — identifier + relationship
-    structural = {"calls", "who calls", "called by", "depends on", "inherits",
-                  "extends", "entry point", "defined in", "what calls", "what does",
-                  "explain", "show me", "callers of", "callees of"}
-    for s in structural:
-        if s in msg:
-            return "structural", None
-
-    # Subsystem — conceptual domain query
-    for kw, role in _ROLE_KEYWORDS.items():
-        if kw in msg:
-            return "subsystem", role
-
-    return "semantic", None
-
-
-def extract_anchors(message: str) -> list[str]:
-    candidates = set()
-    for m in _IDENT_RE.finditer(message):
-        name = m.group(1) or m.group(2) or m.group(3) or m.group(4)
-        if name and len(name) > 2:
-            candidates.add(name)
-    for word in message.split():
-        clean = word.strip('`"\'.,?!')
-        if "_" in clean and len(clean) > 4:
-            candidates.add(clean)
-    return list(candidates)[:6]
+def initial_state(messages, repo_id: str, repo_root: str = "", agent_type: str = "qa",
+                   auto_apply: bool = True) -> "AgentState":
+    return {
+        "messages": messages,
+        "repo_id": repo_id,
+        "repo_root": repo_root,
+        "agent_type": agent_type,
+        "mode": "", "mode_decided_by": "",
+        "auto_apply": auto_apply,
+        "intent": "", "anchors": [], "context_sgl": "", "commit_context": "",
+        "retrieval_trace": [], "coverage": "",
+        "role_hint": [], "placement_dir": "", "plan": [], "plan_summary": "",
+        "plan_attempts": 0, "write_results": [], "files_written": [],
+        "write_errors": [], "progress": [], "_pending_writes": [],
+    }
 
 
 def _coverage(sgl: str, commits: str) -> str:
@@ -116,7 +100,22 @@ def _coverage(sgl: str, commits: str) -> str:
     return "sparse"
 
 
-# ── Retrieval node ─────────────────────────────────────────────────────────
+# ── Shared entry: classify read vs write ────────────────────────────────
+
+async def classify(state: AgentState) -> AgentState:
+    query = state["messages"][-1].content if state["messages"] else ""
+    mode, decided_by = classify_mode(query)
+    agent_type = infer_agent_type(query)
+    return {**state, "mode": mode, "mode_decided_by": decided_by, "agent_type": agent_type}
+
+
+def route_mode(state: AgentState) -> Literal["read", "write"]:
+    if state.get("mode") == "write" and state.get("repo_root"):
+        return "write"
+    return "read"
+
+
+# ── Read path (unchanged behavior) ──────────────────────────────────────
 
 async def retrieve_context(state: AgentState) -> AgentState:
     query = state["messages"][-1].content if state["messages"] else ""
@@ -130,7 +129,6 @@ async def retrieve_context(state: AgentState) -> AgentState:
     resolved_anchors = []
 
     if intent == "entrypoints":
-        # Index lookup — no embedding, no fulltext
         eps = await graph_builder.find_entrypoints(repo_id)
         if eps:
             lines = ["# Entrypoints / API routes"]
@@ -140,7 +138,6 @@ async def retrieve_context(state: AgentState) -> AgentState:
         trace.append({"step": "entrypoints", "count": len(eps) if eps else 0})
 
     elif intent == "subsystem" and role_hint:
-        # Role index — no embedding
         syms = await graph_builder.find_by_role(repo_id, role_hint)
         if syms:
             cards = [{"s": s, "callees": [], "callers": []} for s in syms]
@@ -149,19 +146,16 @@ async def retrieve_context(state: AgentState) -> AgentState:
         trace.append({"step": "role_lookup", "role": role_hint, "hits": len(syms)})
 
     elif intent == "structural":
-        # Step 0: lexical fulltext — try resolving identifier before Qdrant
         lexical_hits = await graph_builder.resolve_anchors_lexical(repo_id, query)
         trace.append({"step": "lexical_ft", "hits": len(lexical_hits)})
 
         if lexical_hits:
-            # Got a name match — use graph only
             resolved_anchors = [h["name"] for h in lexical_hits[:3]]
             uids = [h["uid"] for h in lexical_hits if h.get("uid")]
             cards = await graph_builder.resolve_uids_to_cards(repo_id, uids)
             if cards:
                 sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
 
-            # Also check if it's a "who calls X" question
             for anchor in resolved_anchors[:2]:
                 if any(w in query.lower() for w in ["calls", "uses", "who", "callers"]):
                     data = await graph_builder.reverse_calls(repo_id, anchor)
@@ -174,9 +168,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
                         sgl_parts.append("\n".join(lines))
 
             trace.append({"step": "neo4j_structural", "anchors": resolved_anchors})
-
         else:
-            # No lexical hit — fall back to vector
             uid_hits = await embedder.search_symbols(repo_id, query, limit=8)
             if uid_hits:
                 uids = [h["uid"] for h in uid_hits if h["uid"]]
@@ -195,7 +187,6 @@ async def retrieve_context(state: AgentState) -> AgentState:
             commit_ctx = "\n".join(lines)
         trace.append({"step": "commit_search", "hits": len(commits)})
 
-        # Also resolve any named anchors structurally
         if anchors:
             lexical_hits = await graph_builder.resolve_anchors_lexical(repo_id, " ".join(anchors))
             if lexical_hits:
@@ -207,7 +198,6 @@ async def retrieve_context(state: AgentState) -> AgentState:
             trace.append({"step": "lexical_ft", "hits": len(lexical_hits)})
 
     else:
-        # Semantic: step 0 — try lexical first
         lexical_hits = await graph_builder.resolve_anchors_lexical(repo_id, query, limit=4)
         if lexical_hits and lexical_hits[0].get("uid"):
             trace.append({"step": "lexical_ft", "hits": len(lexical_hits)})
@@ -217,16 +207,16 @@ async def retrieve_context(state: AgentState) -> AgentState:
                 sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
             resolved_anchors = [h["name"] for h in lexical_hits[:3]]
         else:
-            # Pure semantic: Qdrant UIDs → Neo4j cards
             uid_hits = await embedder.search_symbols(repo_id, query, limit=12)
             trace.append({"step": "qdrant_uids", "hits": len(uid_hits)})
+            cards = []
             if uid_hits:
                 uids = [h["uid"] for h in uid_hits if h["uid"]]
                 cards = await graph_builder.resolve_uids_to_cards(repo_id, uids)
                 if cards:
                     sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
                 resolved_anchors = [h["qualname"] for h in uid_hits[:3] if h.get("qualname")]
-            trace.append({"step": "neo4j_resolve", "cards": len(cards) if uid_hits else 0})
+            trace.append({"step": "neo4j_resolve", "cards": len(cards)})
 
     context_sgl = "\n\n".join(sgl_parts)
     cov = _coverage(context_sgl, commit_ctx)
@@ -234,16 +224,10 @@ async def retrieve_context(state: AgentState) -> AgentState:
 
     return {
         **state,
-        "intent": intent,
-        "anchors": resolved_anchors,
-        "context_sgl": context_sgl,
-        "commit_context": commit_ctx,
-        "retrieval_trace": trace,
-        "coverage": cov,
+        "intent": intent, "anchors": resolved_anchors, "context_sgl": context_sgl,
+        "commit_context": commit_ctx, "retrieval_trace": trace, "coverage": cov,
     }
 
-
-# ── Coverage grader ───────────────────────────────────────────────────────
 
 def grade_context(state: AgentState) -> Literal["sufficient", "widen", "retry"]:
     cov = state.get("coverage", "empty")
@@ -255,7 +239,6 @@ def grade_context(state: AgentState) -> Literal["sufficient", "widen", "retry"]:
 
 
 async def widen_retrieval(state: AgentState) -> AgentState:
-    """Sparse coverage: broaden one axis (lower confidence, more hits)."""
     query = state["messages"][-1].content
     uid_hits = await embedder.search_symbols(state["repo_id"], query, limit=16)
     uids = [h["uid"] for h in uid_hits if h["uid"]]
@@ -263,29 +246,22 @@ async def widen_retrieval(state: AgentState) -> AgentState:
     sgl = serialize_cards_to_sgl(cards, include_legend=True) if cards else ""
     cov = _coverage(sgl, state.get("commit_context", ""))
     return {
-        **state,
-        "context_sgl": sgl or state.get("context_sgl", ""),
-        "coverage": cov,
+        **state, "context_sgl": sgl or state.get("context_sgl", ""), "coverage": cov,
         "retrieval_trace": [*state.get("retrieval_trace", []), {"step": "widen", "hits": len(uid_hits)}],
     }
 
 
 async def retry_retrieval(state: AgentState) -> AgentState:
-    """Empty coverage: try first keyword of query."""
     query = state["messages"][-1].content
     uid_hits = await embedder.search_symbols(state["repo_id"], query.split()[0], limit=6)
     uids = [h["uid"] for h in uid_hits if h["uid"]]
     cards = await graph_builder.resolve_uids_to_cards(state["repo_id"], uids)
     sgl = serialize_cards_to_sgl(cards, include_legend=True) if cards else ""
     return {
-        **state,
-        "context_sgl": sgl,
-        "coverage": "sparse" if sgl else "empty",
+        **state, "context_sgl": sgl, "coverage": "sparse" if sgl else "empty",
         "retrieval_trace": [*state.get("retrieval_trace", []), {"step": "retry"}],
     }
 
-
-# ── System prompts ────────────────────────────────────────────────────────
 
 SYSTEM_PROMPTS = {
     "qa": (
@@ -306,10 +282,7 @@ SYSTEM_PROMPTS = {
     ),
 }
 
-
-# ── Repo map cache (per repo_id, stable across queries) ──────────────────
-
-_REPO_MAP_CACHE: dict[str, str] = {}
+_REPO_MAP_CACHE: dict = {}
 
 
 async def _get_repo_map(repo_id: str) -> str:
@@ -321,16 +294,16 @@ async def _get_repo_map(repo_id: str) -> str:
     return _REPO_MAP_CACHE[repo_id]
 
 
-# ── LLM node ──────────────────────────────────────────────────────────────
+def invalidate_repo_map(repo_id: str):
+    _REPO_MAP_CACHE.pop(repo_id, None)
+
 
 def make_llm_node(llm: BaseLanguageModel):
     async def call_llm(state: AgentState) -> AgentState:
         agent_type = state.get("agent_type", "qa")
         sys_prompt = SYSTEM_PROMPTS.get(agent_type, SYSTEM_PROMPTS["qa"])
 
-        # T0: repo map as stable prefix (cached per repo_id)
         repo_map = await _get_repo_map(state["repo_id"])
-
         context_block = ""
         if repo_map:
             context_block += f"### Repository Structure\n{repo_map}\n\n"
@@ -356,21 +329,257 @@ def make_llm_node(llm: BaseLanguageModel):
     return call_llm
 
 
+# ── Write path ───────────────────────────────────────────────────────────
+
+async def plan_context(state: AgentState) -> AgentState:
+    query = state["messages"][-1].content if state["messages"] else ""
+    roles = infer_roles(query)
+    anchors = extract_anchors(query)
+    wc = await build_write_context(state["repo_id"], state["repo_root"], roles, anchors)
+    rendered = render_write_context(wc)
+    progress = [*state.get("progress", []), {
+        "event": "context_ready",
+        "placement_dir": wc.placement_dir,
+        "exemplars": [p for p, _ in wc.exemplars],
+        "anchors": anchors,
+        "roles": roles,
+    }]
+    return {
+        **state,
+        "role_hint": roles,
+        "placement_dir": wc.placement_dir,
+        "context_sgl": rendered,   # reuse this field to carry the rendered write context
+        "progress": progress,
+    }
+
+
+_PLANNER_SYS = (
+    "You are a senior engineer planning a code change. Given the request and the "
+    "repository context (map, placement directory, exemplar files showing existing "
+    "patterns), produce a plan as STRICT JSON only — no prose, no markdown fence.\n"
+    'Format: {"summary": "one sentence", "files": ['
+    '{"rel_path": "path/to/file.py", "op": "create|rewrite", "intent": "one line description"}'
+    ']}\n'
+    "Rules: reuse the import/framework style shown in the exemplar files. "
+    "Prefer creating new files over rewriting large existing ones. "
+    "Plan at most 3 files. rel_path must be relative to the repo root."
+)
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1:
+        return None
+    try:
+        return json.loads(text[start:end + 1])
+    except Exception:
+        return None
+
+
+def make_planner_node(llm: BaseLanguageModel):
+    async def planner(state: AgentState) -> AgentState:
+        query = state["messages"][-1].content if state["messages"] else ""
+        messages = [
+            SystemMessage(content=_PLANNER_SYS),
+            SystemMessage(content=state.get("context_sgl", "")),
+            HumanMessage(content=query),
+        ]
+        response = await llm.ainvoke(messages)
+        raw = response.content or ""
+        data = _extract_json(raw)
+        plan = []
+        summary = ""
+        if data and isinstance(data.get("files"), list):
+            summary = data.get("summary", "")
+            for f in data["files"][:3]:
+                rel_path = f.get("rel_path", "").strip()
+                op = f.get("op", "create")
+                intent = f.get("intent", "")
+                if rel_path and op in ("create", "rewrite", "append"):
+                    plan.append({"rel_path": rel_path, "op": op, "intent": intent})
+
+        logger.info("planner_done", plan_files=len(plan), raw_len=len(raw), raw_preview=raw[:500])
+
+        progress = [*state.get("progress", []), {
+            "event": "plan_ready", "summary": summary, "files": plan,
+        }]
+        return {
+            **state, "plan": plan, "plan_summary": summary,
+            "plan_attempts": state.get("plan_attempts", 0) + 1, "progress": progress,
+        }
+    return planner
+
+
+def grade_plan(state: AgentState) -> Literal["ok", "replan", "abandon"]:
+    decision = "ok" if state.get("plan") else (
+        "replan" if state.get("plan_attempts", 0) < 2 else "abandon"
+    )
+    logger.info("grade_plan", decision=decision, plan_len=len(state.get("plan") or []),
+                attempts=state.get("plan_attempts", 0))
+    return decision
+
+
+_CODER_SYS = (
+    "You write one complete source file. Output ONLY the file content inside a single "
+    "fenced code block — no explanation before or after. Follow the import style and "
+    "conventions shown in the exemplar files exactly. The file must be syntactically valid."
+)
+
+
+def make_coder_node(llm: BaseLanguageModel):
+    async def coder(state: AgentState) -> AgentState:
+        write_ctx_block = state.get("context_sgl", "")
+        pending: list[FileWrite] = []
+        progress = list(state.get("progress", []))
+
+        for i, task in enumerate(state.get("plan", [])):
+            progress.append({
+                "event": "writing_file", "rel_path": task["rel_path"],
+                "index": i, "total": len(state["plan"]), "intent": task.get("intent", ""),
+            })
+            messages = [
+                SystemMessage(content=_CODER_SYS),
+                SystemMessage(content=write_ctx_block),
+                HumanMessage(content=(
+                    f"File: {task['rel_path']}\n"
+                    f"Operation: {task['op']}\n"
+                    f"Intent: {task.get('intent', '')}\n"
+                    f"Write the complete file content now."
+                )),
+            ]
+            try:
+                response = await llm.ainvoke(messages)
+                content = response.content or ""
+                code = _extract_code_block(content)
+                logger.info("coder_done", rel_path=task["rel_path"], raw_len=len(content), code_len=len(code))
+                if code.strip():
+                    pending.append(FileWrite(rel_path=task["rel_path"], op=task["op"],
+                                              content=code, reason=task.get("intent", "")))
+            except Exception as e:
+                logger.error("coder_failed", rel_path=task["rel_path"], error=str(e), exc_info=True)
+
+        return {**state, "_pending_writes": [p.model_dump() for p in pending], "progress": progress}
+    return coder
+
+
+def _extract_code_block(text: str) -> str:
+    text = text.strip()
+    fence = re.search(r"```(?:\w+)?\n(.*?)```", text, re.DOTALL)
+    if fence:
+        return fence.group(1)
+    return text
+
+
+def grade_writes(state: AgentState) -> Literal["ok", "abandon"]:
+    n = len(state.get("_pending_writes") or [])
+    logger.info("grade_writes", pending=n)
+    return "ok" if n else "abandon"
+
+
+async def apply_writes(state: AgentState) -> AgentState:
+    logger.info("apply_writes_start", pending=len(state.get("_pending_writes") or []), repo_root=state.get("repo_root"))
+    repo_root = state["repo_root"]
+    auto_apply = state.get("auto_apply", True)
+    results = []
+    files_written = []
+    errors = []
+    progress = list(state.get("progress", []))
+
+    for raw in state.get("_pending_writes", []):
+        fw = FileWrite(**raw)
+        res = apply_write(repo_root, fw) if auto_apply else preview_write(repo_root, fw)
+        results.append(res.model_dump())
+        if res.ok and res.applied:
+            files_written.append(fw.rel_path)
+        elif not res.ok:
+            errors.append(f"{fw.rel_path}: {res.error}")
+        progress.append({"event": "file_written", **res.model_dump()})
+
+    if files_written:
+        invalidate_repo_map(state["repo_id"])
+
+    return {**state, "write_results": results, "files_written": files_written,
+            "write_errors": errors, "progress": progress}
+
+
+async def summarize_write(state: AgentState) -> AgentState:
+    files_written = state.get("files_written", [])
+    errors = state.get("write_errors", [])
+    plan_summary = state.get("plan_summary", "")
+
+    lines = []
+    if files_written:
+        lines.append(f"**{plan_summary or 'Implemented the requested change.'}**\n")
+        lines.append("Files written:")
+        for res in state.get("write_results", []):
+            if res.get("applied"):
+                lines.append(f"- `{res['rel_path']}` ({res['op']}, +{res['added']}/-{res['removed']} lines)")
+    else:
+        lines.append("I wasn't able to safely apply this change.")
+
+    if errors:
+        lines.append("\nIssues:")
+        for e in errors:
+            lines.append(f"- {e}")
+
+    if not files_written and not errors and not state.get("plan"):
+        lines = ["I couldn't produce a safe plan for this request — no files were identified to change."]
+
+    content = "\n".join(lines)
+    progress = [*state.get("progress", []), {
+        "event": "implement_done",
+        "applied": state.get("auto_apply", True),
+        "files": state.get("write_results", []),
+        "summary_md": content,
+    }]
+    return {**state, "messages": [*state["messages"], AIMessage(content=content)], "progress": progress}
+
+
+async def abandon_to_read(state: AgentState) -> AgentState:
+    """Write request we couldn't safely plan/execute — degrade to a read-style answer."""
+    logger.warning("abandon_to_read", plan=state.get("plan"), pending=state.get("_pending_writes"))
+    return {**state, "agent_type": "qa"}
+
+
 # ── Graph factory ─────────────────────────────────────────────────────────
 
 def build_agent_graph(llm: BaseLanguageModel) -> StateGraph:
     graph = StateGraph(AgentState)
+
+    graph.add_node("classify", classify)
     graph.add_node("retrieve", retrieve_context)
     graph.add_node("widen", widen_retrieval)
     graph.add_node("retry", retry_retrieval)
     graph.add_node("llm", make_llm_node(llm))
-    graph.set_entry_point("retrieve")
+
+    graph.add_node("plan_context", plan_context)
+    graph.add_node("planner", make_planner_node(llm))
+    graph.add_node("coder", make_coder_node(llm))
+    graph.add_node("apply", apply_writes)
+    graph.add_node("summarize", summarize_write)
+    graph.add_node("abandon", abandon_to_read)
+
+    graph.set_entry_point("classify")
+    graph.add_conditional_edges("classify", route_mode, {"read": "retrieve", "write": "plan_context"})
+
     graph.add_conditional_edges("retrieve", grade_context, {
-        "sufficient": "llm",
-        "widen": "widen",
-        "retry": "retry",
+        "sufficient": "llm", "widen": "widen", "retry": "retry",
     })
     graph.add_edge("widen", "llm")
     graph.add_edge("retry", "llm")
     graph.add_edge("llm", END)
+
+    graph.add_edge("plan_context", "planner")
+    graph.add_conditional_edges("planner", grade_plan, {
+        "ok": "coder", "replan": "planner", "abandon": "abandon",
+    })
+    graph.add_conditional_edges("coder", grade_writes, {"ok": "apply", "abandon": "abandon"})
+    graph.add_edge("apply", "summarize")
+    graph.add_edge("summarize", END)
+    graph.add_edge("abandon", "retrieve")
+
     return graph.compile()

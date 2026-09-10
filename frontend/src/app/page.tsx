@@ -12,6 +12,7 @@ export default function Home() {
   const [showAdd, setShowAdd] = useState(false);
   const [addType, setAddType] = useState<"local" | "github">("local");
   const [localPath, setLocalPath] = useState("");
+  const [inPlace, setInPlace] = useState(false);
   const [ghUrl, setGhUrl] = useState("");
   const [ghPat, setGhPat] = useState("");
   const [repoName, setRepoName] = useState("");
@@ -25,14 +26,18 @@ export default function Home() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 1500);
+    return () => clearInterval(t);
+  }, []);
 
   const handleAdd = async () => {
     setAdding(true);
     setError("");
     try {
       if (addType === "local") {
-        await addLocalRepo(localPath, repoName || undefined);
+        await addLocalRepo(localPath, repoName || undefined, inPlace);
       } else {
         await addGithubRepo(ghUrl, ghPat, repoName || undefined);
       }
@@ -145,17 +150,33 @@ export default function Home() {
                   <span>{r.language}</span>
                 </div>
 
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-3">
                   {r.indexed ? (
                     <span className="flex items-center gap-1.5 text-xs text-synapse-green font-mono">
                       <span className="w-1.5 h-1.5 rounded-full bg-synapse-green animate-pulse" />
                       INDEXED
                     </span>
+                  ) : r.indexing_stage === "error" ? (
+                    <div className="space-y-1">
+                      <span className="flex items-center gap-1.5 text-xs text-red-400 font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                        FAILED
+                      </span>
+                      <p className="text-[10px] text-red-400/70 font-mono truncate" title={r.indexing_error}>{r.indexing_error}</p>
+                    </div>
                   ) : (
-                    <span className="flex items-center gap-1.5 text-xs text-synapse-cyan font-mono">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      INDEXING...
-                    </span>
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-xs text-synapse-cyan font-mono">
+                        <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                        <span className="truncate">{r.indexing_detail || "Queued..."}</span>
+                      </div>
+                      <div className="h-1 rounded-full bg-synapse-border overflow-hidden">
+                        <div
+                          className="h-full bg-synapse-cyan transition-all duration-500 ease-out"
+                          style={{ width: `${r.indexing_pct ?? 0}%` }}
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
 
@@ -198,12 +219,25 @@ export default function Home() {
 
             <div className="space-y-3">
               {addType === "local" ? (
-                <input
-                  placeholder="/path/to/your/repo"
-                  value={localPath}
-                  onChange={(e) => setLocalPath(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-synapse-bg border border-synapse-border rounded-lg text-synapse-text font-mono text-sm placeholder:text-synapse-muted focus:outline-none focus:border-synapse-cyan/50"
-                />
+                <>
+                  <input
+                    placeholder="/path/to/your/repo"
+                    value={localPath}
+                    onChange={(e) => setLocalPath(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-synapse-bg border border-synapse-border rounded-lg text-synapse-text font-mono text-sm placeholder:text-synapse-muted focus:outline-none focus:border-synapse-cyan/50"
+                  />
+                  <label className="flex items-start gap-2.5 px-1 py-1 cursor-pointer group">
+                    <input
+                      type="checkbox"
+                      checked={inPlace}
+                      onChange={(e) => setInPlace(e.target.checked)}
+                      className="mt-0.5 accent-synapse-cyan"
+                    />
+                    <span className="text-xs text-synapse-muted group-hover:text-synapse-text transition-colors">
+                      Edit in place — let the implement agent write directly to this path instead of a sandboxed copy.
+                    </span>
+                  </label>
+                </>
               ) : (
                 <>
                   <input

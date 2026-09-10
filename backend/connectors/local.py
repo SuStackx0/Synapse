@@ -8,10 +8,20 @@ import structlog
 logger = structlog.get_logger()
 
 
-async def clone_local(source_path: str) -> tuple[str, str]:
-    """Copy a local repo into the managed repos directory. Returns (repo_id, dest_path)."""
+async def clone_local(source_path: str, in_place: bool = False) -> tuple[str, str]:
+    """
+    Copy a local repo into the managed repos directory, or (if in_place)
+    index a bind-mounted path directly so writes from the implement agent
+    land on the real host filesystem instead of a throwaway copy.
+    Returns (repo_id, dest_path).
+    """
     if not os.path.isdir(source_path):
         raise ValueError(f"Path does not exist: {source_path}")
+
+    if in_place:
+        repo_id = str(uuid.uuid4())
+        logger.info("local_in_place", path=source_path, repo_id=repo_id)
+        return repo_id, source_path
 
     repo_id = str(uuid.uuid4())
     dest = os.path.join(settings.repos_base_path, repo_id)

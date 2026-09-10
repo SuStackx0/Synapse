@@ -1,39 +1,67 @@
-import git
-from pathlib import Path
+import os
+import subprocess
 from typing import List, Dict, Any
 import structlog
 
 logger = structlog.get_logger()
 
+_SEP = "\x1f"   # unit separator — won't appear in commit messages
+_REC = "\x1e"   # record separator
 
-def get_commit_history(repo_path: str, max_commits: int = 200) -> List[Dict[str, Any]]:
+
+def get_commit_history(repo_path: str, max_commits: int = 200, timeout: int = 15) -> List[Dict[str, Any]]:
+    """
+    Commit metadata for embedding — messages only, no per-commit file diffing.
+
+    Deliberately avoids `git log --name-only` (and GitPython's equivalent
+    commit.diff()/commit.stats): reproduced hangs on real repos where a
+    commit touches a large/binary file (a checked-in .db, a lockfile) —
+    the file-list diff computation for that one commit can hang the whole
+    walk indefinitely. Commit messages are what actually get embedded, so
+    skip the diff machinery entirely rather than risk indexing hanging on it.
+    """
+    env = {
+        **os.environ,
+        "GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
+        # Stale/foreign worktree registrations (.git/worktrees/*) make git
+        # probe lock files that can hang indefinitely without this.
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    fmt = f"{_REC}%H{_SEP}%h{_SEP}%an{_SEP}%aI{_SEP}%s"
+
     try:
-        repo = git.Repo(repo_path)
-    except git.InvalidGitRepositoryError:
-        logger.warning("not_a_git_repo", path=repo_path)
+        result = subprocess.run(
+            ["git", "-C", repo_path, "--no-pager", "log",
+             f"--pretty=format:{fmt}", f"-{max_commits}", "HEAD"],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("commit_history_timeout", path=repo_path)
+        return []
+    except FileNotFoundError:
+        return []
+
+    if result.returncode != 0:
+        logger.warning("not_a_git_repo", path=repo_path, stderr=result.stderr[:200])
         return []
 
     commits = []
-    for commit in list(repo.iter_commits("HEAD", max_count=max_commits)):
-        diff_text = ""
-        try:
-            if commit.parents:
-                diffs = commit.parents[0].diff(commit, create_patch=True)
-                diff_text = "\n".join(
-                    d.diff.decode("utf-8", errors="ignore")[:1000]
-                    for d in diffs
-                )[:3000]
-        except Exception:
-            pass
-
+    for block in result.stdout.split(_REC):
+        block = block.strip("\n")
+        if not block:
+            continue
+        parts = block.split(_SEP)
+        if len(parts) != 5:
+            continue
+        full_sha, sha, author, date, message = parts
         commits.append({
-            "sha": commit.hexsha[:8],
-            "full_sha": commit.hexsha,
-            "message": commit.message.strip(),
-            "author": str(commit.author),
-            "date": commit.committed_datetime.isoformat(),
-            "files_changed": [item.a_path for item in commit.stats.files],
-            "diff_preview": diff_text,
+            "sha": sha,
+            "full_sha": full_sha,
+            "message": message.strip(),
+            "author": author,
+            "date": date,
+            "files_changed": [],
+            "diff_preview": "",
         })
     return commits
 
@@ -42,6 +70,6 @@ def build_commit_chunks(commits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Flatten commits into embeddable text chunks."""
     chunks = []
     for c in commits:
-        text = f"Commit {c['sha']}: {c['message']}\nFiles: {', '.join(c['files_changed'][:10])}\n{c['diff_preview']}"
+        text = f"Commit {c['sha']}: {c['message']}"
         chunks.append({"text": text, "meta": c})
     return chunks

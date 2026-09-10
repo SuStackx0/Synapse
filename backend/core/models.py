@@ -16,6 +16,10 @@ class Repository(Base):
     indexed: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    indexing_stage: Mapped[str] = mapped_column(String, default="queued")
+    indexing_detail: Mapped[str] = mapped_column(String, default="")
+    indexing_pct: Mapped[int] = mapped_column(Integer, default=0)
+    indexing_error: Mapped[str] = mapped_column(String, default="")
 
 
 class LLMProvider(Base):
