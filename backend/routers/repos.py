@@ -32,6 +32,13 @@ class GitHubRepoRequest(BaseModel):
     name: Optional[str] = None
 
 
+class NewProjectRequest(BaseModel):
+    name: str
+    description: str
+    in_place: bool = False
+    path: Optional[str] = None  # required when in_place=True — where to create it
+
+
 # Checkpoint stages, in order, with their target completion percentage —
 # shown in the UI so the user knows how much longer indexing will take.
 STAGES = [
@@ -122,6 +129,47 @@ async def add_github_repo(req: GitHubRepoRequest, bg: BackgroundTasks, db: Async
     return {"repo_id": repo_id, "name": name, "status": "indexing"}
 
 
+@router.post("/new")
+async def create_new_project(req: NewProjectRequest, bg: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """
+    Start a project from nothing — no local path, no GitHub URL. Creates an
+    empty (git-initialized) directory, registers it as a Repository, then
+    autonomously builds it out via the same graph-guided implement pipeline
+    used for a single "implement X" chat turn, looped until the planner
+    itself says there's nothing meaningful left to add.
+    """
+    import subprocess
+
+    repo_id = str(uuid.uuid4())
+    if req.in_place:
+        if not req.path:
+            raise HTTPException(400, "path is required when in_place is true")
+        dest = req.path
+    else:
+        dest = os.path.join(settings.repos_base_path, repo_id)
+    os.makedirs(dest, exist_ok=True)
+
+    readme = os.path.join(dest, "README.md")
+    if not os.path.exists(readme):
+        with open(readme, "w", encoding="utf-8") as fh:
+            fh.write(f"# {req.name}\n\n{req.description}\n")
+
+    if not os.path.isdir(os.path.join(dest, ".git")):
+        subprocess.run(["git", "init"], cwd=dest, capture_output=True, timeout=10)
+
+    repo = Repository(
+        id=repo_id, name=req.name, path=dest, source="new",
+        meta={"description": req.description},
+        indexing_stage="building", indexing_detail="Queued…", indexing_pct=0,
+    )
+    db.add(repo)
+    await db.commit()
+
+    from agents.autobuild import run_autonomous_build
+    bg.add_task(run_autonomous_build, repo_id, dest, req.description)
+    return {"repo_id": repo_id, "name": req.name, "status": "building"}
+
+
 def _serialize(r: Repository) -> dict:
     return {
         "id": r.id, "name": r.name, "source": r.source,
@@ -131,6 +179,7 @@ def _serialize(r: Repository) -> dict:
         "indexing_detail": r.indexing_detail,
         "indexing_pct": r.indexing_pct,
         "indexing_error": r.indexing_error,
+        "build_session_id": (r.meta or {}).get("build_session_id"),
     }
 
 
@@ -147,6 +196,79 @@ async def get_repo(repo_id: str, db: AsyncSession = Depends(get_db)):
     if not repo:
         raise HTTPException(404, "Repo not found")
     return {**_serialize(repo), "language": repo.language, "path": repo.path}
+
+
+class FileContentRequest(BaseModel):
+    path: str
+    content: str
+
+
+@router.get("/{repo_id}/file")
+async def get_file(repo_id: str, path: str, db: AsyncSession = Depends(get_db)):
+    """Read a file's current content — powers the side-panel editor."""
+    from agents.write_tool import safe_path, PathViolation
+
+    result = await db.execute(select(Repository).where(Repository.id == repo_id))
+    repo = result.scalar_one_or_none()
+    if not repo:
+        raise HTTPException(404, "Repo not found")
+    try:
+        abs_path = safe_path(repo.path, path)
+    except PathViolation as e:
+        raise HTTPException(400, str(e))
+    if not os.path.isfile(abs_path):
+        raise HTTPException(404, "File not found")
+    try:
+        with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
+            content = fh.read()
+    except Exception as e:
+        raise HTTPException(500, f"Could not read file: {e}")
+    return {"path": path, "content": content, "lines": content.count("\n") + 1}
+
+
+@router.put("/{repo_id}/file")
+async def save_file(repo_id: str, req: FileContentRequest, bg: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Save a user's manual edit from the side-panel editor straight to disk."""
+    from agents.write_tool import safe_path, PathViolation
+    from agents.graph import invalidate_repo_map
+    import ast as _ast
+
+    result = await db.execute(select(Repository).where(Repository.id == repo_id))
+    repo = result.scalar_one_or_none()
+    if not repo:
+        raise HTTPException(404, "Repo not found")
+    try:
+        abs_path = safe_path(repo.path, req.path)
+    except PathViolation as e:
+        raise HTTPException(400, str(e))
+
+    if req.path.endswith(".py"):
+        try:
+            _ast.parse(req.content)
+        except SyntaxError as e:
+            raise HTTPException(400, f"Syntax error at line {e.lineno}: {e.msg}")
+
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    tmp = abs_path + ".synapse.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(req.content)
+    os.replace(tmp, abs_path)
+
+    invalidate_repo_map(repo_id)
+    bg.add_task(_reindex_single_file, repo_id, repo.path)
+    logger.info("file_saved", repo_id=repo_id, path=req.path, bytes=len(req.content))
+    return {"saved": req.path, "lines": req.content.count("\n") + 1}
+
+
+async def _reindex_single_file(repo_id: str, repo_path: str):
+    """Lightweight background reindex after a manual save from the editor panel."""
+    try:
+        parsed = await asyncio.get_event_loop().run_in_executor(None, walk_repo, repo_path)
+        await graph_builder.build_graph(repo_id, parsed)
+        await embedder.index_symbols(repo_id, parsed)
+        logger.info("reindexed_after_manual_save", repo_id=repo_id, files=len(parsed))
+    except Exception as e:
+        logger.error("reindex_after_manual_save_failed", repo_id=repo_id, error=str(e))
 
 
 @router.delete("/{repo_id}")

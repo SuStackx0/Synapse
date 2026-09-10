@@ -26,13 +26,67 @@ from agents.intent import (
     classify_mode, classify_intent, extract_anchors, infer_agent_type, infer_roles,
 )
 from agents.write_context import build_write_context, render_write_context
-from agents.write_tool import FileWrite, apply_write, preview_write
+from agents.write_tool import FileWrite, apply_write, preview_write, safe_path, PathViolation
 import json
 import operator
+import os
 import re
 import structlog
 
 logger = structlog.get_logger()
+
+_FILE_MENTION_RE = re.compile(
+    r'\b[\w./-]+\.(?:py|js|jsx|ts|tsx|json|ya?ml|html|css|md|sql)\b', re.I
+)
+
+
+def _read_referenced_files(repo_root: str, message: str, max_files: int = 3, max_bytes: int = 8000) -> list[str]:
+    """When a query names specific files ("check the syntax of app.py and auth.py"),
+    the SGL symbol cards alone (signatures + call graph, never full text) can't answer
+    that — so pull the real source straight off disk instead of making the LLM guess
+    or, worse, ask the user to paste code the backend already has."""
+    if not repo_root or not os.path.isdir(repo_root):
+        return []
+    blocks = []
+    seen = set()
+    name_index = None
+    for m in _FILE_MENTION_RE.finditer(message):
+        name = m.group(0)
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+
+        rel_path = None
+        try:
+            abs_path = safe_path(repo_root, name)
+            if os.path.isfile(abs_path):
+                rel_path = name
+        except PathViolation:
+            pass
+
+        if rel_path is None:
+            if name_index is None:
+                name_index = {}
+                for root, dirs, files in os.walk(repo_root):
+                    dirs[:] = [d for d in dirs if d not in {".git", "node_modules", "__pycache__", ".venv", "venv", ".next", "dist", "build"}]
+                    for f in files:
+                        name_index.setdefault(f.lower(), os.path.relpath(os.path.join(root, f), repo_root))
+            found = name_index.get(os.path.basename(name).lower())
+            if found:
+                rel_path = found
+
+        if not rel_path:
+            continue
+        try:
+            abs_path = safe_path(repo_root, rel_path)
+            with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read(max_bytes)
+            blocks.append(f"# Full source: {rel_path}\n```\n{content}\n```")
+        except (PathViolation, OSError):
+            continue
+        if len(blocks) >= max_files:
+            break
+    return blocks
 
 
 class FileTask(TypedDict):
@@ -129,6 +183,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
     sgl_parts = []
     commit_ctx = ""
     resolved_anchors = []
+    all_cards: list = []
 
     if intent == "entrypoints":
         eps = await graph_builder.find_entrypoints(repo_id)
@@ -145,6 +200,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
             cards = [{"s": s, "callees": [], "callers": []} for s in syms]
             sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
             resolved_anchors = [s["name"] for s in syms[:6]]
+            all_cards.extend(cards)
         trace.append({"step": "role_lookup", "role": role_hint, "hits": len(syms)})
 
     elif intent == "structural":
@@ -157,6 +213,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
             cards = await graph_builder.resolve_uids_to_cards(repo_id, uids)
             if cards:
                 sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
+                all_cards.extend(cards)
 
             for anchor in resolved_anchors[:2]:
                 if any(w in query.lower() for w in ["calls", "uses", "who", "callers"]):
@@ -177,6 +234,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
                 cards = await graph_builder.resolve_uids_to_cards(repo_id, uids)
                 if cards:
                     sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
+                    all_cards.extend(cards)
                 resolved_anchors = [h["qualname"] for h in uid_hits[:3] if h.get("qualname")]
             trace.append({"step": "qdrant_fallback", "hits": len(uid_hits)})
 
@@ -196,6 +254,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
                 cards = await graph_builder.resolve_uids_to_cards(repo_id, uids)
                 if cards:
                     sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
+                    all_cards.extend(cards)
                 resolved_anchors = [h["name"] for h in lexical_hits[:3]]
             trace.append({"step": "lexical_ft", "hits": len(lexical_hits)})
 
@@ -207,6 +266,7 @@ async def retrieve_context(state: AgentState) -> AgentState:
             cards = await graph_builder.resolve_uids_to_cards(repo_id, uids)
             if cards:
                 sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
+                all_cards.extend(cards)
             resolved_anchors = [h["name"] for h in lexical_hits[:3]]
         else:
             uid_hits = await embedder.search_symbols(repo_id, query, limit=12)
@@ -217,8 +277,31 @@ async def retrieve_context(state: AgentState) -> AgentState:
                 cards = await graph_builder.resolve_uids_to_cards(repo_id, uids)
                 if cards:
                     sgl_parts.append(serialize_cards_to_sgl(cards, include_legend=True))
+                    all_cards.extend(cards)
                 resolved_anchors = [h["qualname"] for h in uid_hits[:3] if h.get("qualname")]
             trace.append({"step": "neo4j_resolve", "cards": len(cards)})
+
+    file_blocks = _read_referenced_files(state.get("repo_root", ""), query)
+    resolved_rel_paths = []
+    for c in all_cards:
+        rel = (c.get("s") or {}).get("rel_path")
+        if rel and rel not in resolved_rel_paths:
+            resolved_rel_paths.append(rel)
+    already = {b.split("\n", 1)[0] for b in file_blocks}
+    for rel in resolved_rel_paths[:3]:
+        marker = f"# Full source: {rel}"
+        if marker in already:
+            continue
+        try:
+            abs_path = safe_path(state.get("repo_root", ""), rel)
+            with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read(8000)
+            file_blocks.append(f"{marker}\n```\n{content}\n```")
+        except (PathViolation, OSError):
+            continue
+    if file_blocks:
+        sgl_parts.extend(file_blocks)
+        trace.append({"step": "full_source", "files": len(file_blocks)})
 
     context_sgl = "\n\n".join(sgl_parts)
     cov = _coverage(context_sgl, commit_ctx)

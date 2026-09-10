@@ -5,14 +5,21 @@ module.exports = {
     extend: {
       colors: {
         synapse: {
-          bg: "#0a0a0f",
-          surface: "#111118",
-          border: "#1e1e2e",
-          cyan: "#00d4ff",
-          green: "#00ff87",
+          bg: "#08090A",
+          surface: "#0F1011",
+          "surface-2": "#16181A",
+          "surface-3": "#1D2023",
+          border: "#212327",
+          "border-strong": "#2C3034",
+          cyan: "#2AA8E0",
+          "cyan-dim": "#1B7FA8",
+          green: "#3FB950",
+          red: "#F0524A",
+          amber: "#D29922",
           purple: "#a855f7",
-          muted: "#6b7280",
-          text: "#e2e8f0",
+          muted: "#6A7076",
+          text: "#E8EAED",
+          "text-2": "#9BA1A8",
         },
       },
       fontFamily: {

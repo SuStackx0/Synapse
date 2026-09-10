@@ -13,11 +13,11 @@ const Benchmarker = dynamic(() => import("@/components/benchmark/Benchmarker"), 
 
 type Tab = "chat" | "graph" | "health" | "benchmark";
 
-const TABS: { id: Tab; label: string; icon: React.ElementType; color: string }[] = [
-  { id: "chat", label: "Ask AI", icon: Brain, color: "text-synapse-cyan" },
-  { id: "graph", label: "Repo Brain", icon: GitBranch, color: "text-synapse-green" },
-  { id: "health", label: "Vibe Check", icon: Activity, color: "text-synapse-purple" },
-  { id: "benchmark", label: "Benchmark", icon: Scale, color: "text-yellow-400" },
+const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
+  { id: "chat", label: "Ask AI", icon: Brain },
+  { id: "graph", label: "Repo Brain", icon: GitBranch },
+  { id: "health", label: "Vibe Check", icon: Activity },
+  { id: "benchmark", label: "Benchmark", icon: Scale },
 ];
 
 export default function RepoPage() {
@@ -32,25 +32,24 @@ export default function RepoPage() {
 
   if (!repo) return (
     <div className="h-screen flex items-center justify-center">
-      <div className="text-synapse-cyan font-mono animate-pulse">Loading...</div>
+      <div className="text-synapse-text-2 animate-pulse">Loading…</div>
     </div>
   );
 
   return (
     <div className="h-screen flex flex-col">
       {/* Header */}
-      <header className="border-b border-synapse-border px-6 py-4 flex items-center gap-4">
+      <header className="h-12 shrink-0 border-b border-synapse-border px-4 flex items-center gap-3">
         <button onClick={() => router.push("/")} className="text-synapse-muted hover:text-synapse-text transition-colors">
           <ArrowLeft className="w-4 h-4" />
         </button>
-        <div className="flex items-center gap-2">
-          <Brain className="w-4 h-4 text-synapse-cyan" />
-          <span className="font-mono font-semibold text-synapse-text">{repo.name}</span>
-          <span className="text-synapse-muted text-xs font-mono">· {repo.file_count} files</span>
+        <div className="flex items-center gap-2 text-[13px]">
+          <span className="font-medium text-synapse-text">{repo.name}</span>
+          <span className="text-synapse-muted">· {repo.file_count} files</span>
         </div>
-        <div className="flex items-center gap-1.5 ml-2">
-          <span className="w-1.5 h-1.5 rounded-full bg-synapse-green animate-pulse" />
-          <span className="text-synapse-green text-xs font-mono">INDEXED</span>
+        <div className="flex items-center gap-1.5 ml-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-synapse-green" />
+          <span className="text-synapse-text-2 text-[13px]">Indexed</span>
         </div>
         <div className="flex-1" />
         <a href="/settings" className="text-synapse-muted hover:text-synapse-text transition-colors">
@@ -59,16 +58,16 @@ export default function RepoPage() {
       </header>
 
       {/* Tab Bar */}
-      <div className="border-b border-synapse-border px-6 flex gap-1">
-        {TABS.map(({ id: tid, label, icon: Icon, color }) => (
+      <div className="h-10 shrink-0 border-b border-synapse-border px-4 flex gap-1">
+        {TABS.map(({ id: tid, label, icon: Icon }) => (
           <button
             key={tid}
             onClick={() => setTab(tid)}
             className={clsx(
-              "flex items-center gap-2 px-4 py-3 text-sm font-mono border-b-2 transition-all",
+              "relative flex items-center gap-1.5 px-3 h-10 text-[13px] transition-colors",
               tab === tid
-                ? `border-current ${color}`
-                : "border-transparent text-synapse-muted hover:text-synapse-text"
+                ? "text-synapse-text after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-synapse-cyan"
+                : "text-synapse-muted hover:text-synapse-text-2"
             )}
           >
             <Icon className="w-3.5 h-3.5" />
@@ -79,7 +78,7 @@ export default function RepoPage() {
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
-        {tab === "chat" && <ChatPanel repoId={id} />}
+        {tab === "chat" && <ChatPanel repoId={id} buildSessionId={repo.build_session_id} />}
         {tab === "graph" && <GraphExplorer repoId={id} />}
         {tab === "health" && <HealthDashboard repoId={id} />}
         {tab === "benchmark" && <Benchmarker repoId={id} />}

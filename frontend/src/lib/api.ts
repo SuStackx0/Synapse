@@ -19,6 +19,8 @@ export const addLocalRepo = (path: string, name?: string, inPlace?: boolean) =>
   apiFetch("/repos/local", { method: "POST", body: JSON.stringify({ path, name, in_place: !!inPlace }) });
 export const addGithubRepo = (url: string, pat: string, name?: string) =>
   apiFetch("/repos/github", { method: "POST", body: JSON.stringify({ url, pat, name }) });
+export const createNewProject = (name: string, description: string, inPlace?: boolean, path?: string) =>
+  apiFetch("/repos/new", { method: "POST", body: JSON.stringify({ name, description, in_place: !!inPlace, path }) });
 export const deleteRepo = (id: string) => apiFetch(`/repos/${id}`, { method: "DELETE" });
 
 // Graph
@@ -49,6 +51,14 @@ export const getSessionMessages = (sessionId: string) =>
 export const deleteSession = (sessionId: string) =>
   apiFetch(`/sessions/${sessionId}`, { method: "DELETE" });
 
+// File content (side-panel editor)
+export const getFileContent = (repoId: string, path: string) =>
+  apiFetch<FileContent>(`/repos/${repoId}/file?path=${encodeURIComponent(path)}`);
+export const saveFileContent = (repoId: string, path: string, content: string) =>
+  apiFetch<{ saved: string; lines: number }>(`/repos/${repoId}/file`, {
+    method: "PUT", body: JSON.stringify({ path, content }),
+  });
+
 // Benchmark
 export const runBenchmark = (data: BenchmarkRequest) =>
   apiFetch<BenchmarkResult>("/agents/benchmark", { method: "POST", body: JSON.stringify(data) });
@@ -64,6 +74,7 @@ export interface Repo {
   indexing_detail?: string;
   indexing_pct?: number;
   indexing_error?: string;
+  build_session_id?: string;
 }
 export interface GraphNode {
   id: number; name: string; type: string; rel_path?: string;
@@ -100,4 +111,7 @@ export interface ChatSessionInfo {
 export interface ChatMessageInfo {
   id: string; session_id: string; role: "user" | "assistant";
   content: string; meta: Record<string, any>; created_at: string;
+}
+export interface FileContent {
+  path: string; content: string; lines: number;
 }

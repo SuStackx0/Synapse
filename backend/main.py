@@ -3,6 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import structlog
 
+from core.logging_config import configure_logging, RequestLoggingMiddleware
+
+configure_logging()
+
 from core.database import init_db
 from ingestion.graph_builder import graph_builder
 from ingestion.embedder import embedder
@@ -29,6 +33,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

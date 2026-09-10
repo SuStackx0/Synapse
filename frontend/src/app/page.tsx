@@ -1,8 +1,8 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getRepos, addLocalRepo, addGithubRepo, deleteRepo, Repo } from "@/lib/api";
-import { GitBranch, Plus, Trash2, Loader2, FolderOpen, Github, Zap, Activity, Brain } from "lucide-react";
+import { getRepos, addLocalRepo, addGithubRepo, createNewProject, deleteRepo, Repo } from "@/lib/api";
+import { GitBranch, Plus, Trash2, Loader2, FolderOpen, Github, Zap, Activity, Brain, Sparkles } from "lucide-react";
 import { clsx } from "clsx";
 
 export default function Home() {
@@ -10,12 +10,13 @@ export default function Home() {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
-  const [addType, setAddType] = useState<"local" | "github">("local");
+  const [addType, setAddType] = useState<"local" | "github" | "new">("local");
   const [localPath, setLocalPath] = useState("");
   const [inPlace, setInPlace] = useState(false);
   const [ghUrl, setGhUrl] = useState("");
   const [ghPat, setGhPat] = useState("");
   const [repoName, setRepoName] = useState("");
+  const [projectDescription, setProjectDescription] = useState("");
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
 
@@ -38,11 +39,13 @@ export default function Home() {
     try {
       if (addType === "local") {
         await addLocalRepo(localPath, repoName || undefined, inPlace);
-      } else {
+      } else if (addType === "github") {
         await addGithubRepo(ghUrl, ghPat, repoName || undefined);
+      } else {
+        await createNewProject(repoName || "New Project", projectDescription);
       }
       setShowAdd(false);
-      setLocalPath(""); setGhUrl(""); setGhPat(""); setRepoName("");
+      setLocalPath(""); setGhUrl(""); setGhPat(""); setRepoName(""); setProjectDescription("");
       load();
     } catch (e: any) {
       setError(e.message);
@@ -131,6 +134,8 @@ export default function Home() {
                   <div className="flex items-center gap-2">
                     {r.source === "github" ? (
                       <Github className="w-4 h-4 text-synapse-muted" />
+                    ) : r.source === "new" ? (
+                      <Sparkles className="w-4 h-4 text-synapse-cyan" />
                     ) : (
                       <FolderOpen className="w-4 h-4 text-synapse-muted" />
                     )}
@@ -201,7 +206,7 @@ export default function Home() {
             <p className="text-synapse-muted text-sm mb-5">Index a codebase for AI analysis.</p>
 
             <div className="flex gap-2 mb-5">
-              {(["local", "github"] as const).map((t) => (
+              {(["local", "github", "new"] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => setAddType(t)}
@@ -212,13 +217,35 @@ export default function Home() {
                       : "border-synapse-border text-synapse-muted hover:border-synapse-border/80"
                   )}
                 >
-                  {t === "local" ? "Local Path" : "GitHub"}
+                  {t === "local" ? "Local Path" : t === "github" ? "GitHub" : "New Project"}
                 </button>
               ))}
             </div>
 
             <div className="space-y-3">
-              {addType === "local" ? (
+              {addType === "new" ? (
+                <>
+                  <input
+                    placeholder="Project name"
+                    value={repoName}
+                    onChange={(e) => setRepoName(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-synapse-bg border border-synapse-border rounded-lg text-synapse-text font-mono text-sm placeholder:text-synapse-muted focus:outline-none focus:border-synapse-cyan/50"
+                  />
+                  <textarea
+                    placeholder="Describe what you want to build — e.g. 'a todo list app with SQLite persistence, add/complete/delete tasks, and a simple web UI'"
+                    value={projectDescription}
+                    onChange={(e) => setProjectDescription(e.target.value)}
+                    rows={4}
+                    className="w-full px-4 py-2.5 bg-synapse-bg border border-synapse-border rounded-lg text-synapse-text text-sm placeholder:text-synapse-muted focus:outline-none focus:border-synapse-cyan/50 resize-none"
+                  />
+                  <div className="flex items-start gap-2 px-1 py-1 text-xs text-synapse-muted leading-relaxed">
+                    <Sparkles className="w-3.5 h-3.5 shrink-0 mt-0.5 text-synapse-cyan" />
+                    Synapse will scaffold the project from nothing and keep building — structure,
+                    dependencies, entry point, data layer — iterating on its own until it's a real,
+                    working project. This can take several minutes.
+                  </div>
+                </>
+              ) : addType === "local" ? (
                 <>
                   <input
                     placeholder="/path/to/your/repo"
@@ -255,12 +282,14 @@ export default function Home() {
                   />
                 </>
               )}
-              <input
-                placeholder="Name (optional)"
-                value={repoName}
-                onChange={(e) => setRepoName(e.target.value)}
-                className="w-full px-4 py-2.5 bg-synapse-bg border border-synapse-border rounded-lg text-synapse-text font-mono text-sm placeholder:text-synapse-muted focus:outline-none focus:border-synapse-cyan/50"
-              />
+              {addType !== "new" && (
+                <input
+                  placeholder="Name (optional)"
+                  value={repoName}
+                  onChange={(e) => setRepoName(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-synapse-bg border border-synapse-border rounded-lg text-synapse-text font-mono text-sm placeholder:text-synapse-muted focus:outline-none focus:border-synapse-cyan/50"
+                />
+              )}
             </div>
 
             {error && <p className="text-red-400 text-xs font-mono mt-3">{error}</p>}
@@ -274,10 +303,12 @@ export default function Home() {
               </button>
               <button
                 onClick={handleAdd}
-                disabled={adding}
+                disabled={adding || (addType === "new" && (!repoName.trim() || !projectDescription.trim()))}
                 className="flex-1 py-2.5 bg-synapse-cyan/10 border border-synapse-cyan/40 rounded-lg text-synapse-cyan text-sm font-mono hover:bg-synapse-cyan/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {adding ? <><Loader2 className="w-4 h-4 animate-spin" /> Connecting...</> : "Connect"}
+                {adding
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> {addType === "new" ? "Starting..." : "Connecting..."}</>
+                  : addType === "new" ? "Start Building" : "Connect"}
               </button>
             </div>
           </div>

@@ -58,7 +58,12 @@ def detect_role(fn: Dict, rel_path: str, file_imports: List[str]) -> str:
     if imports_set & _AI_IMPORTS:
         return "AI"
 
-    parts = set(rel_path.lower().replace("\\", "/").split("/"))
+    # Match both directory segments ("app/auth/utils.py") and the filename stem
+    # ("auth.py" at repo root) — a bare split on "/" leaves the extension glued
+    # to the last segment, so "auth.py" would otherwise never equal "auth".
+    segments = rel_path.lower().replace("\\", "/").split("/")
+    stem = segments[-1].rsplit(".", 1)[0] if segments else ""
+    parts = set(segments[:-1]) | {stem}
     if parts & _AUTH_PATHS:
         return "AUTH"
     if parts & _CONFIG_PATHS:
