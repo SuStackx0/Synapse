@@ -31,13 +31,13 @@ export default function RepoPage() {
   }, [id]);
 
   if (!repo) return (
-    <div className="min-h-screen flex items-center justify-center">
+    <div className="h-screen flex items-center justify-center">
       <div className="text-synapse-cyan font-mono animate-pulse">Loading...</div>
     </div>
   );
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col">
       {/* Header */}
       <header className="border-b border-synapse-border px-6 py-4 flex items-center gap-4">
         <button onClick={() => router.push("/")} className="text-synapse-muted hover:text-synapse-text transition-colors">
