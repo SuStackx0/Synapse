@@ -25,8 +25,8 @@ export const deleteRepo = (id: string) => apiFetch(`/repos/${id}`, { method: "DE
 
 // Graph
 export const getGraph = (repoId: string) => apiFetch<GraphData>(`/graph/${repoId}`);
-export const getGraphNode = (repoId: string, nodeId: number) =>
-  apiFetch(`/graph/${repoId}/node/${nodeId}`);
+export const getGraphNode = (repoId: string, nodeUid: string) =>
+  apiFetch(`/graph/${repoId}/node/${encodeURIComponent(nodeUid)}`);
 
 // Health
 export const getHealth = (repoId: string) => apiFetch<HealthData>(`/health/${repoId}`);
@@ -77,10 +77,10 @@ export interface Repo {
   build_session_id?: string;
 }
 export interface GraphNode {
-  id: number; name: string; type: string; rel_path?: string;
+  id: string; name: string; type: string; rel_path?: string;
   file_path?: string; lineno?: number;
 }
-export interface GraphEdge { source: number; target: number; rel: string; }
+export interface GraphEdge { source: string; target: string; rel: string; }
 export interface GraphData { nodes: GraphNode[]; edges: GraphEdge[]; }
 export interface HealthData {
   score: number; total_files: number; total_lines: number;

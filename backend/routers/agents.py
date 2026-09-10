@@ -200,8 +200,11 @@ async def benchmark(req: BenchmarkRequest, db: AsyncSession = Depends(get_db)):
     repo_root = repo.path if repo else ""
 
     async def run_one(provider_id: str):
-        result = await db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
-        provider = result.scalar_one_or_none()
+        # Own DB session — the request-scoped `db` is not safe to share across
+        # concurrently-running coroutines (asyncio.gather below).
+        async with SessionLocal() as local_db:
+            result = await local_db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
+            provider = result.scalar_one_or_none()
         if not provider:
             return "", 0.0
         llm = build_llm_from_provider(provider)
