@@ -8,7 +8,7 @@ import json, time, asyncio
 from core.database import get_db
 from agents.graph import build_agent_graph, AgentState
 from agents.llm_factory import get_active_llm
-from langchain.schema import HumanMessage
+from langchain_core.messages import HumanMessage
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 

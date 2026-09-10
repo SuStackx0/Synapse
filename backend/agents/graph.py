@@ -16,8 +16,8 @@ Coverage tiers: complete | partial | sparse | empty
 """
 from typing import TypedDict, Annotated, Sequence, Literal
 from langgraph.graph import StateGraph, END
-from langchain.schema import BaseMessage, HumanMessage, SystemMessage
-from langchain.schema import BaseLanguageModel
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.language_models import BaseLanguageModel
 from ingestion.embedder import embedder
 from ingestion.graph_builder import graph_builder, serialize_cards_to_sgl, SKL_LEGEND
 import operator
@@ -59,22 +59,15 @@ class AgentState(TypedDict):
 def classify_intent(message: str) -> tuple[str, str | None]:
     """
     Returns (intent, role_hint).
-    Tries role match first (subsystem), then structural/historical/semantic.
+    Priority: entrypoints > historical > structural > subsystem > semantic.
     """
     msg = message.lower()
 
-    # Check for subsystem/role keywords
-    for kw, role in _ROLE_KEYWORDS.items():
-        if kw in msg:
-            return "subsystem", role
-
-    # Structural indicators
-    structural = {"calls", "who calls", "called by", "depends on", "imports",
-                  "inherits", "extends", "entry point", "defined in", "uses",
-                  "what calls", "what does", "explain", "show me"}
-    for s in structural:
-        if s in msg:
-            return "structural", None
+    # Entrypoints — checked first so "routes/endpoints" doesn't fall to subsystem
+    if any(w in msg for w in {"entrypoint", "entry point", "all routes", "all endpoints",
+                               "list routes", "list endpoints", "what routes", "what endpoints",
+                               "api routes", "where does it start"}):
+        return "entrypoints", None
 
     # Historical
     historical = {"commit", "when did", "who added", "changed", "history",
@@ -83,9 +76,18 @@ def classify_intent(message: str) -> tuple[str, str | None]:
         if h in msg:
             return "historical", None
 
-    # Entrypoint queries
-    if any(w in msg for w in {"entrypoint", "entry point", "routes", "endpoints", "start"}):
-        return "entrypoints", None
+    # Structural — identifier + relationship
+    structural = {"calls", "who calls", "called by", "depends on", "inherits",
+                  "extends", "entry point", "defined in", "what calls", "what does",
+                  "explain", "show me", "callers of", "callees of"}
+    for s in structural:
+        if s in msg:
+            return "structural", None
+
+    # Subsystem — conceptual domain query
+    for kw, role in _ROLE_KEYWORDS.items():
+        if kw in msg:
+            return "subsystem", role
 
     return "semantic", None
 

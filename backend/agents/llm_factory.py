@@ -1,5 +1,5 @@
 from langchain_community.chat_models import ChatOpenAI
-from langchain.schema import BaseLanguageModel
+from langchain_core.language_models import BaseLanguageModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from core.models import LLMProvider
