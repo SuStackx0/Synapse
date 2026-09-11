@@ -13,8 +13,11 @@ from pydantic import BaseModel
 from typing import Literal, Optional
 import ast
 import difflib
+import json
 import os
 import shutil
+
+import yaml
 
 ALLOWED_EXT = {
     # Python / data / config
@@ -103,11 +106,28 @@ def validate_write(repo_root: str, fw: FileWrite, original: Optional[str] = None
         return False, "content exceeds size cap"
     if not fw.content.strip():
         return False, "empty content"
-    if fw.rel_path.endswith(".py") and fw.op != "append":
+
+    # Validate the actual resulting file, not just the appended fragment — a fragment
+    # can be invalid on its own (e.g. a method body with no enclosing class) while the
+    # concatenated result is fine, or vice versa.
+    full_content = (original or "") + fw.content if fw.op == "append" else fw.content
+    ext = os.path.splitext(fw.rel_path)[1].lower()
+    if ext == ".py":
         try:
-            ast.parse(fw.content)
+            ast.parse(full_content)
         except SyntaxError as e:
             return False, f"syntax error line {e.lineno}: {e.msg}"
+    elif ext in (".json", ".jsonc"):
+        try:
+            json.loads(full_content)
+        except json.JSONDecodeError as e:
+            return False, f"invalid JSON at line {e.lineno}: {e.msg}"
+    elif ext in (".yml", ".yaml"):
+        try:
+            yaml.safe_load(full_content)
+        except yaml.YAMLError as e:
+            return False, f"invalid YAML: {e}"
+
     if fw.op == "create" and os.path.exists(abs_path):
         return False, "file exists (use rewrite)"
     if fw.op == "rewrite":

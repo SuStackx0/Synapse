@@ -120,6 +120,7 @@ class AgentState(TypedDict):
     plan: list
     plan_summary: str
     plan_attempts: int
+    plan_last_raw_output: str    # unparseable/rejected planner output, replayed on replan
     write_results: list
     files_written: list
     write_errors: list
@@ -140,7 +141,7 @@ def initial_state(messages, repo_id: str, repo_root: str = "", agent_type: str =
         "intent": "", "anchors": [], "context_sgl": "", "commit_context": "",
         "retrieval_trace": [], "coverage": "",
         "role_hint": [], "placement_dir": "", "plan": [], "plan_summary": "",
-        "plan_attempts": 0, "write_results": [], "files_written": [],
+        "plan_attempts": 0, "plan_last_raw_output": "", "write_results": [], "files_written": [],
         "write_errors": [], "progress": [], "_pending_writes": [],
         "clarifying_question": "",
     }
@@ -500,6 +501,15 @@ def make_planner_node(llm: BaseLanguageModel):
             SystemMessage(content=state.get("context_sgl", "")),
             *state["messages"],  # full conversation — follow-ups ("also add tests for that") need it
         ]
+        if state.get("plan_last_raw_output"):
+            # Retrying after an unparseable/empty plan — replay exactly what went wrong
+            # instead of re-issuing the identical prompt and getting the identical failure.
+            messages.append(SystemMessage(content=(
+                "Your previous response could not be used as a plan (it was not valid JSON, "
+                "or contained no files/question). Do not repeat it. Previous response:\n"
+                f"{state['plan_last_raw_output'][:2000]}"
+            )))
+
         response = await llm.ainvoke(messages)
         raw = response.content or ""
         data = _extract_json(raw)
@@ -529,7 +539,9 @@ def make_planner_node(llm: BaseLanguageModel):
         return {
             **state, "plan": plan, "plan_summary": summary,
             "clarifying_question": question,
-            "plan_attempts": state.get("plan_attempts", 0) + 1, "progress": progress,
+            "plan_attempts": state.get("plan_attempts", 0) + 1,
+            "plan_last_raw_output": "" if (plan or question) else raw,
+            "progress": progress,
         }
     return planner
 
@@ -554,10 +566,29 @@ async def ask_user(state: AgentState) -> AgentState:
     return {**state, "messages": [*state["messages"], AIMessage(content=question)]}
 
 
+def _read_current_file(repo_root: str, rel_path: str, max_bytes: int = 12000) -> Optional[str]:
+    if not repo_root:
+        return None
+    try:
+        abs_path = safe_path(repo_root, rel_path)
+    except PathViolation:
+        return None
+    if not os.path.isfile(abs_path):
+        return None
+    try:
+        with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
+            return fh.read(max_bytes)
+    except OSError:
+        return None
+
+
 _CODER_SYS = (
     "You write one complete source file. Output ONLY the file content inside a single "
     "fenced code block — no explanation before or after. Follow the import style and "
-    "conventions shown in the exemplar files exactly. The file must be syntactically valid."
+    "conventions shown in the exemplar files exactly. The file must be syntactically valid. "
+    "If a 'Current contents' block is given for a rewrite, that is the real, current file on "
+    "disk — your output replaces it entirely, so preserve every existing function, class, "
+    "import, and behavior that isn't part of the requested change. Never drop unrelated code."
 )
 
 
@@ -578,9 +609,26 @@ def make_coder_node(llm: BaseLanguageModel):
                 "event": "writing_file", "rel_path": task["rel_path"],
                 "index": i, "total": len(state["plan"]), "intent": task.get("intent", ""),
             })
+
+            current_block = ""
+            if task["op"] == "rewrite":
+                # The exemplar/wiring files in write_ctx_block are picked by role/placement
+                # heuristics and often don't include the actual rewrite target — without
+                # this, the model rewrites a file it has never seen, which the truncation
+                # guard doesn't reliably catch (a plausible-looking full file can still
+                # silently drop unrelated code).
+                current = _read_current_file(state.get("repo_root", ""), task["rel_path"])
+                if current is not None:
+                    current_block = (
+                        f"### Current contents of {task['rel_path']} (rewrite this file, "
+                        f"preserving anything not related to the requested change)\n"
+                        f"```\n{current}\n```\n"
+                    )
+
             messages = [
                 SystemMessage(content=_CODER_SYS),
                 SystemMessage(content=write_ctx_block),
+                *([SystemMessage(content=current_block)] if current_block else []),
                 HumanMessage(content=(
                     f"File: {task['rel_path']}\n"
                     f"Operation: {task['op']}\n"

@@ -31,6 +31,9 @@ PyGithub>=2.3.0
 # Crypto (API key encryption at rest)
 cryptography>=42.0.0
 
+# YAML validation for the write-path syntax gate
+PyYAML>=6.0
+
 # Utilities
 python-multipart>=0.0.9
 python-dotenv>=1.0.0

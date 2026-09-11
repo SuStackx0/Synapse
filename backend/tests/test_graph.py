@@ -1,5 +1,5 @@
 """Unit tests for the pure helper functions in agents/graph.py."""
-from agents.graph import _extract_json, _extract_code_block, _coverage
+from agents.graph import _extract_json, _extract_code_block, _coverage, _read_current_file
 
 
 # ── _extract_json ────────────────────────────────────────────────────────
@@ -89,3 +89,31 @@ def test_coverage_boundary_at_200_is_sparse():
 def test_coverage_boundary_at_800_is_partial():
     # combined length exactly 800 is not > 800, so still partial.
     assert _coverage("x" * 800, "") == "partial"
+
+
+# ── _read_current_file ───────────────────────────────────────────────────
+# Regression coverage: the coder used to rewrite files it had never seen,
+# because only exemplar/wiring files (chosen by role heuristics) were ever
+# read into context. _read_current_file lets the coder node read the actual
+# rewrite target directly.
+
+def test_read_current_file_returns_content(tmp_path):
+    (tmp_path / "app.py").write_text("x = 1\n")
+    assert _read_current_file(str(tmp_path), "app.py") == "x = 1\n"
+
+
+def test_read_current_file_missing_returns_none(tmp_path):
+    assert _read_current_file(str(tmp_path), "nope.py") is None
+
+
+def test_read_current_file_no_repo_root_returns_none():
+    assert _read_current_file("", "app.py") is None
+
+
+def test_read_current_file_path_violation_returns_none(tmp_path):
+    assert _read_current_file(str(tmp_path), "../../etc/passwd") is None
+
+
+def test_read_current_file_truncates_at_max_bytes(tmp_path):
+    (tmp_path / "big.py").write_text("x" * 100)
+    assert len(_read_current_file(str(tmp_path), "big.py", max_bytes=10)) == 10

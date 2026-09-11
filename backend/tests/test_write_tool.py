@@ -113,10 +113,48 @@ def test_apply_write_rejects_syntax_invalid_python_rewrite(tmp_path):
     assert (tmp_path / "broken.py").read_text() == "a = 1\n"
 
 
-def test_apply_write_append_python_skips_ast_check(tmp_path):
-    # op == "append" is exempt from ast.parse per validate_write's condition.
+def test_apply_write_append_validates_the_concatenated_result(tmp_path):
+    # A fragment can look wrong in isolation but be valid once appended (or vice
+    # versa) — validate_write checks original + fragment, not the fragment alone.
+    (tmp_path / "mod.py").write_text("a = 1\n")
+    fw = FileWrite(rel_path="mod.py", op="append", content="b = 2\n")
+    res = apply_write(str(tmp_path), fw)
+    assert res.ok is True
+    assert res.applied is True
+
+
+def test_apply_write_rejects_append_that_breaks_the_file(tmp_path):
     (tmp_path / "mod.py").write_text("a = 1\n")
     fw = FileWrite(rel_path="mod.py", op="append", content="this is not )( valid python\n")
+    res = apply_write(str(tmp_path), fw)
+    assert res.ok is False
+    assert "syntax error" in res.error
+    assert (tmp_path / "mod.py").read_text() == "a = 1\n"
+
+
+def test_apply_write_rejects_invalid_json(tmp_path):
+    fw = FileWrite(rel_path="config.json", op="create", content="{not valid json")
+    res = apply_write(str(tmp_path), fw)
+    assert res.ok is False
+    assert "JSON" in res.error
+
+
+def test_apply_write_allows_valid_json(tmp_path):
+    fw = FileWrite(rel_path="config.json", op="create", content='{"a": 1}')
+    res = apply_write(str(tmp_path), fw)
+    assert res.ok is True
+    assert res.applied is True
+
+
+def test_apply_write_rejects_invalid_yaml(tmp_path):
+    fw = FileWrite(rel_path="config.yaml", op="create", content="a: [1, 2\nb: broken")
+    res = apply_write(str(tmp_path), fw)
+    assert res.ok is False
+    assert "YAML" in res.error
+
+
+def test_apply_write_allows_valid_yaml(tmp_path):
+    fw = FileWrite(rel_path="config.yaml", op="create", content="a: 1\nb: 2\n")
     res = apply_write(str(tmp_path), fw)
     assert res.ok is True
     assert res.applied is True
