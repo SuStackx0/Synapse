@@ -1,5 +1,28 @@
 """Unit tests for the pure helper functions in agents/graph.py."""
-from agents.graph import _extract_json, _extract_code_block, _coverage, _read_current_file
+import json
+
+import pytest
+from langchain_core.messages import HumanMessage
+
+from agents.graph import (
+    _extract_json, _extract_code_block, _coverage, _read_current_file,
+    initial_state, make_planner_node,
+)
+
+
+class _FakeResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _FakeLLM:
+    """Returns one canned response per call, in order — enough to drive make_planner_node
+    without a real model."""
+    def __init__(self, *responses: str):
+        self._responses = list(responses)
+
+    async def ainvoke(self, messages):
+        return _FakeResponse(self._responses.pop(0))
 
 
 # ── _extract_json ────────────────────────────────────────────────────────
@@ -117,3 +140,48 @@ def test_read_current_file_path_violation_returns_none(tmp_path):
 def test_read_current_file_truncates_at_max_bytes(tmp_path):
     (tmp_path / "big.py").write_text("x" * 100)
     assert len(_read_current_file(str(tmp_path), "big.py", max_bytes=10)) == 10
+
+
+# ── make_planner_node: op normalization against the real filesystem ──────
+# Regression: the planner repeatedly said "create" for README.md even though
+# routers/repos.py pre-writes one before autobuild ever runs, and
+# validate_write correctly rejects a "create" onto an existing file - so the
+# write silently never landed. The planner now corrects op against what's
+# actually on disk instead of trusting the model's guess.
+
+@pytest.mark.asyncio
+async def test_planner_flips_create_to_rewrite_for_existing_file(tmp_path):
+    (tmp_path / "README.md").write_text("# stub\n")
+    llm = _FakeLLM(json.dumps({
+        "summary": "update docs",
+        "files": [{"rel_path": "README.md", "op": "create", "intent": "add usage docs"}],
+    }))
+    planner = make_planner_node(llm)
+    state = initial_state([HumanMessage(content="add docs")], repo_id="r1", repo_root=str(tmp_path))
+    result = await planner(state)
+    assert result["plan"] == [{"rel_path": "README.md", "op": "rewrite", "intent": "add usage docs"}]
+
+
+@pytest.mark.asyncio
+async def test_planner_flips_rewrite_to_create_for_missing_file(tmp_path):
+    llm = _FakeLLM(json.dumps({
+        "summary": "add config",
+        "files": [{"rel_path": "config.json", "op": "rewrite", "intent": "add config"}],
+    }))
+    planner = make_planner_node(llm)
+    state = initial_state([HumanMessage(content="add config")], repo_id="r1", repo_root=str(tmp_path))
+    result = await planner(state)
+    assert result["plan"] == [{"rel_path": "config.json", "op": "create", "intent": "add config"}]
+
+
+@pytest.mark.asyncio
+async def test_planner_leaves_correct_op_unchanged(tmp_path):
+    (tmp_path / "app.py").write_text("x = 1\n")
+    llm = _FakeLLM(json.dumps({
+        "summary": "update app",
+        "files": [{"rel_path": "app.py", "op": "rewrite", "intent": "add a route"}],
+    }))
+    planner = make_planner_node(llm)
+    state = initial_state([HumanMessage(content="add a route")], repo_id="r1", repo_root=str(tmp_path))
+    result = await planner(state)
+    assert result["plan"] == [{"rel_path": "app.py", "op": "rewrite", "intent": "add a route"}]

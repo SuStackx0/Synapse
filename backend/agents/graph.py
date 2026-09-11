@@ -520,11 +520,23 @@ def make_planner_node(llm: BaseLanguageModel):
             question = data["question"].strip()
         elif data and isinstance(data.get("files"), list):
             summary = data.get("summary", "")
+            repo_root = state.get("repo_root", "")
             for f in data["files"][:3]:
                 rel_path = f.get("rel_path", "").strip()
                 op = f.get("op", "create")
                 intent = f.get("intent", "")
                 if rel_path and op in ("create", "rewrite", "append"):
+                    # The model's create/rewrite choice is a guess, not a filesystem check -
+                    # it repeatedly said "create" for files that already exist (README.md is
+                    # the common case: routers/repos.py pre-writes one before autobuild ever
+                    # runs), which validate_write correctly rejects rather than silently
+                    # clobbering the file. Normalize against the real filesystem instead of
+                    # trusting the guess, so the write actually goes through.
+                    exists = _read_current_file(repo_root, rel_path) is not None
+                    if exists and op == "create":
+                        op = "rewrite"
+                    elif not exists and op == "rewrite":
+                        op = "create"
                     plan.append({"rel_path": rel_path, "op": op, "intent": intent})
 
         logger.info("planner_done", plan_files=len(plan), question=bool(question),
