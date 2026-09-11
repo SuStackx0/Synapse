@@ -16,8 +16,21 @@ import difflib
 import os
 import shutil
 
-ALLOWED_EXT = {".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".md",
-               ".yml", ".yaml", ".toml", ".txt", ".sql", ".css", ".env.example"}
+ALLOWED_EXT = {
+    # Python / data / config
+    ".py", ".pyi", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+    ".conf", ".env.example", ".lock",
+    # JS/TS/web
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    # Docs / misc text
+    ".md", ".mdx", ".txt", ".csv", ".xml", ".svg", ".graphql", ".proto",
+    # Shell / scripts
+    ".sh", ".bash", ".ps1",
+    # Other common backend languages
+    ".sql", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c", ".cpp",
+    ".h", ".hpp", ".cs",
+}
 DENY_PARTS = {".git", "node_modules", "__pycache__", ".venv", "venv",
               ".env", ".ssh", "dist", "build", ".next"}
 MAX_BYTES = 256 * 1024
