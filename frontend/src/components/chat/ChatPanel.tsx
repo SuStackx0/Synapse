@@ -1,13 +1,13 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, ReactNode, isValidElement } from "react";
 import {
-  Brain, Send, Loader2, Terminal, FileCode, GitBranch, CheckCircle2,
-  XCircle, FilePlus2, FileEdit, ChevronDown, ChevronRight,
-  HelpCircle, Maximize2,
+  ArrowUp, Check, ChevronRight, Copy, FileEdit, FilePlus2, GitBranch,
+  HelpCircle, Loader2, Maximize2, XCircle,
 } from "lucide-react";
 import { clsx } from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { getSessionMessages, ChatMessageInfo } from "@/lib/api";
 import SessionSidebar from "./SessionSidebar";
 import FilePanel from "./FilePanel";
@@ -70,12 +70,155 @@ async function* streamChat(repoId: string, message: string, sessionId: string | 
   }
 }
 
-function opIcon(op: string, ok: boolean) {
-  if (!ok) return <XCircle className="w-3.5 h-3.5 text-synapse-red" />;
-  return op === "create"
-    ? <FilePlus2 className="w-3.5 h-3.5 text-synapse-green" />
-    : <FileEdit className="w-3.5 h-3.5 text-synapse-text-2" />;
+const LABEL = "text-[10.5px] font-medium uppercase tracking-[0.09em] text-synapse-muted";
+
+function splitPath(p: string) {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? { dir: "", name: p } : { dir: p.slice(0, i + 1), name: p.slice(i + 1) };
 }
+
+/* ── Code blocks ─────────────────────────────────────────────── */
+
+function nodeText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  if (isValidElement(node)) return nodeText((node.props as any)?.children);
+  return "";
+}
+
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const child = Array.isArray(children) ? children[0] : children;
+  const props: any = isValidElement(child) ? child.props : null;
+  const lang = /language-([\w+#.-]+)/.exec(props?.className || "")?.[1] || "";
+  const copy = () => {
+    navigator.clipboard?.writeText(nodeText(props?.children)).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    }).catch(() => {});
+  };
+  return (
+    <div className="group/code my-4 overflow-hidden rounded-lg border border-synapse-border-subtle bg-synapse-surface-code">
+      <div className="flex h-8 items-center justify-between border-b border-synapse-border-subtle pl-3.5 pr-2">
+        <span className="font-mono text-[10.5px] tracking-[0.06em] text-synapse-muted">{lang || "code"}</span>
+        <button
+          onClick={copy}
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-synapse-muted opacity-0 transition-opacity hover:text-synapse-text-2 focus:opacity-100 group-hover/code:opacity-100"
+        >
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="code-body overflow-x-auto px-3.5 py-3">{children}</pre>
+    </div>
+  );
+}
+
+/* ── Step trail ──────────────────────────────────────────────── */
+
+function StepTrail({ activity, live }: { activity: ActivityStep[]; live: boolean }) {
+  return (
+    <ol className="ml-[3px] space-y-[7px] border-l border-synapse-border-subtle pl-[18px]">
+      {activity.map((a) => (
+        <li key={a.id} className="relative text-[12.5px] leading-[1.45]">
+          <span
+            className={clsx(
+              "absolute -left-[22px] top-[5px] h-[7px] w-[7px] rounded-full ring-[3px] ring-synapse-bg",
+              a.status === "error" ? "bg-synapse-red"
+                : a.status === "active" ? "animate-pulse bg-synapse-cyan"
+                : "bg-synapse-border-strong"
+            )}
+          />
+          <span
+            className={clsx(
+              a.status === "error" ? "text-synapse-red"
+                : a.status === "active" && live ? "text-synapse-text"
+                : "text-synapse-text-3"
+            )}
+          >
+            {a.label}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function LiveTrail({ activity }: { activity: ActivityStep[] }) {
+  return (
+    <div className="mb-5">
+      <div className={clsx(LABEL, "mb-2.5 flex items-center gap-1.5")}>
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Working
+      </div>
+      <StepTrail activity={activity} live />
+    </div>
+  );
+}
+
+/* ── Answer footer: steps + retrieval provenance, demoted below the answer ── */
+
+function AnswerMeta({ activity, retrieval }: { activity: ActivityStep[]; retrieval?: RetrievalTrace }) {
+  const [open, setOpen] = useState(false);
+  const hasError = activity.some((a) => a.status === "error");
+  const cov = retrieval?.coverage;
+  const rule = <span className="h-2.5 w-px bg-synapse-border" />;
+
+  return (
+    <div className="mt-5 border-t border-synapse-border-subtle pt-2.5">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[11.5px] text-synapse-muted">
+        {!!activity.length && (
+          <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1.5 transition-colors hover:text-synapse-text-2">
+            <ChevronRight className={clsx("h-3 w-3 transition-transform", open && "rotate-90")} />
+            <span className="tabular-nums">{activity.length} step{activity.length === 1 ? "" : "s"}</span>
+            {hasError && <XCircle className="h-3 w-3 text-synapse-red" />}
+          </button>
+        )}
+        {retrieval && (
+          <>
+            {!!activity.length && rule}
+            <span className="font-mono">{retrieval.intent}</span>
+            {retrieval.has_commits && (
+              <>
+                {rule}
+                <span className="flex items-center gap-1"><GitBranch className="h-2.5 w-2.5" />history</span>
+              </>
+            )}
+            {cov && (
+              <>
+                {rule}
+                <span className="flex items-center gap-1.5">
+                  <span className={clsx(
+                    "h-[5px] w-[5px] rounded-full",
+                    cov === "complete" ? "bg-synapse-green" : cov === "empty" ? "bg-synapse-red" : "bg-synapse-amber"
+                  )} />
+                  {cov} coverage
+                </span>
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {open && (
+        <div className="mt-3.5 space-y-4 pb-1">
+          {!!activity.length && <StepTrail activity={activity} live={false} />}
+          {!!retrieval?.anchors.length && (
+            <div>
+              <div className={clsx(LABEL, "mb-1.5")}>Context anchors</div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11.5px] text-synapse-text-3">
+                {retrieval.anchors.slice(0, 10).map((a) => <span key={a}>{a}</span>)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── File diff manifest ──────────────────────────────────────── */
 
 function FileRow({ file, result, live, onOpen }: {
   file: PlanFile; result?: WriteResult; live?: { tail: string; lines: number; chars: number };
@@ -83,105 +226,83 @@ function FileRow({ file, result, live, onOpen }: {
 }) {
   const [open, setOpen] = useState(false);
   const pending = !result;
+  const canToggle = !!result?.diff;
+  const { dir, name } = splitPath(file.rel_path);
+
   return (
-    <div className="border-b border-synapse-border last:border-0">
-      <div className="w-full flex items-center gap-2.5 h-9 px-3 hover:bg-synapse-surface-2 transition-colors">
-        {pending ? (
-          <Loader2 className="w-3.5 h-3.5 text-synapse-text-2 animate-spin shrink-0" />
-        ) : (
-          opIcon(file.op, result.ok)
+    <div className="border-t border-synapse-border-subtle first:border-t-0">
+      <div
+        onClick={canToggle ? () => setOpen((o) => !o) : undefined}
+        className={clsx(
+          "group/row flex h-9 items-center gap-2.5 pl-2.5 pr-3 transition-colors",
+          canToggle && "cursor-pointer hover:bg-synapse-surface-2"
         )}
+      >
+        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-synapse-muted">
+          {canToggle && <ChevronRight className={clsx("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />}
+        </span>
+        <span className="shrink-0">
+          {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin text-synapse-text-3" />
+            : !result.ok ? <XCircle className="h-3.5 w-3.5 text-synapse-red" />
+            : file.op === "create" ? <FilePlus2 className="h-3.5 w-3.5 text-synapse-green" />
+            : <FileEdit className="h-3.5 w-3.5 text-synapse-text-3" />}
+        </span>
         <button
-          onClick={() => onOpen(file.rel_path)}
-          className="font-mono text-[12px] text-synapse-text-2 truncate flex-1 text-left hover:text-synapse-text transition-colors"
+          onClick={(e) => { e.stopPropagation(); onOpen(file.rel_path); }}
+          className="min-w-0 flex-1 truncate text-left font-mono text-[12px]"
           title="Open in editor"
         >
-          {file.rel_path}
+          <span className="text-synapse-muted">{dir}</span>
+          <span className="text-synapse-text-2 group-hover/row:text-synapse-text">{name}</span>
         </button>
         {pending && live && (
-          <span className="text-[11px] font-mono tabular-nums text-synapse-muted shrink-0">{live.lines}L</span>
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-synapse-muted">{live.lines} L</span>
         )}
-        {result && result.ok && (
-          <span className="text-[11px] font-mono tabular-nums shrink-0">
+        {result?.ok && (
+          <span className="shrink-0 font-mono text-[11px] tabular-nums">
             <span className="text-synapse-green">+{result.added}</span>{" "}
             <span className="text-synapse-red">−{result.removed}</span>
           </span>
         )}
         {result && !result.ok && (
-          <span className="text-[11px] font-mono text-synapse-red shrink-0 max-w-[160px] truncate">{result.error}</span>
+          <span className="max-w-[180px] shrink-0 truncate font-mono text-[11px] text-synapse-red">{result.error}</span>
         )}
-        <button onClick={() => onOpen(file.rel_path)} className="text-synapse-muted hover:text-synapse-cyan transition-colors shrink-0" title="Open in editor">
-          <Maximize2 className="w-3.5 h-3.5" />
+        <button
+          onClick={(e) => { e.stopPropagation(); onOpen(file.rel_path); }}
+          className="shrink-0 text-synapse-muted opacity-0 transition-opacity hover:text-synapse-text group-hover/row:opacity-100"
+          title="Open in editor"
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
         </button>
-        {result?.diff && (
-          <button onClick={() => setOpen((o) => !o)} className="text-synapse-muted hover:text-synapse-text-2 transition-colors shrink-0" title="Toggle diff">
-            {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-          </button>
-        )}
       </div>
+
       {pending && live?.tail && (
-        <pre className="text-[11px] font-mono leading-relaxed px-3 py-2 bg-synapse-bg border-t border-synapse-border overflow-hidden max-h-24 text-synapse-green/70 whitespace-pre-wrap break-all">
+        <pre className="max-h-24 overflow-hidden whitespace-pre-wrap break-all border-t border-synapse-border-subtle bg-synapse-surface-code px-3.5 py-2 font-mono text-[11px] leading-[1.6] text-synapse-text-3">
           {live.tail}
-          <span className="inline-block w-1.5 h-3 bg-synapse-cyan/70 align-middle ml-0.5 animate-pulse" />
+          <span className="ml-0.5 inline-block h-3 w-[6px] animate-pulse bg-synapse-cyan/60 align-middle" />
         </pre>
       )}
+
       {open && result?.diff && (
-        <pre className="text-[11px] font-mono leading-relaxed px-3 py-2 bg-synapse-bg border-t border-synapse-border overflow-x-auto max-h-64 overflow-y-auto">
-          {result.diff.split("\n").map((l, i) => (
-            <div key={i} className={clsx(
-              l.startsWith("+") && !l.startsWith("+++") ? "text-synapse-green" :
-              l.startsWith("-") && !l.startsWith("---") ? "text-synapse-red" :
-              "text-synapse-muted"
-            )}>{l || " "}</div>
-          ))}
-        </pre>
+        <div className="max-h-72 overflow-auto border-t border-synapse-border-subtle bg-synapse-surface-code">
+          <pre className="py-2 font-mono text-[11.5px] leading-[1.6]">
+            {result.diff.split("\n").map((l, i) => {
+              const add = l.startsWith("+") && !l.startsWith("+++");
+              const del = l.startsWith("-") && !l.startsWith("---");
+              const hunk = l.startsWith("@@");
+              return (
+                <div key={i} className={clsx(
+                  "px-3.5",
+                  add ? "bg-synapse-green/[0.07] text-[#8FD69B]"
+                    : del ? "bg-synapse-red/[0.07] text-[#E3948F]"
+                    : hunk ? "text-synapse-cyan-dim"
+                    : "text-synapse-text-3/80"
+                )}>{l || " "}</div>
+              );
+            })}
+          </pre>
+        </div>
       )}
-    </div>
-  );
-}
-
-function ActivityFeed({ activity, done }: { activity: ActivityStep[]; done: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  if (!activity.length) return null;
-
-  if (done && !expanded) {
-    const hasError = activity.some((a) => a.status === "error");
-    return (
-      <button
-        onClick={() => setExpanded(true)}
-        className="mb-4 flex h-7 items-center gap-1.5 text-[12px] text-synapse-muted hover:text-synapse-text-2 transition-colors"
-      >
-        <ChevronRight className="w-3.5 h-3.5" />
-        <span>{activity.length} step{activity.length === 1 ? "" : "s"}</span>
-        {hasError && <XCircle className="w-3 h-3 text-synapse-red" />}
-      </button>
-    );
-  }
-
-  return (
-    <div className={clsx("mb-4", done && "ml-1.5 border-l border-synapse-border pl-4")}>
-      {done && (
-        <button onClick={() => setExpanded(false)} className="flex items-center gap-1.5 text-[12px] text-synapse-muted hover:text-synapse-text-2 mb-1.5 -ml-[19px] transition-colors">
-          <ChevronDown className="w-3.5 h-3.5" />
-          <span>{activity.length} steps</span>
-        </button>
-      )}
-      <div className="space-y-1.5">
-        {activity.map((a) => (
-          <div key={a.id} className="flex items-start gap-2 text-[12px]">
-            {!done && (
-              <span className="mt-0.5 shrink-0">
-                {a.status === "active" && <Loader2 className="w-3 h-3 animate-spin text-synapse-text-2" />}
-                {a.status === "done" && <CheckCircle2 className="w-3 h-3 text-synapse-green" />}
-                {a.status === "error" && <XCircle className="w-3 h-3 text-synapse-red" />}
-              </span>
-            )}
-            <span className={clsx(
-              a.status === "error" ? "text-synapse-red" : "text-synapse-text-2"
-            )}>{a.label}</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -195,9 +316,10 @@ function WritePanel({ w, onOpenFile }: { w: WriteState; onOpenFile: (path: strin
   }, { added: 0, removed: 0 });
 
   return (
-    <div className="my-4 rounded-lg border border-synapse-border bg-synapse-surface overflow-hidden">
-      <div className="flex h-9 items-center gap-3 border-b border-synapse-border px-3">
-        <span className="text-[13px] font-medium text-synapse-text">
+    <div className="my-5 overflow-hidden rounded-lg border border-synapse-border bg-synapse-surface">
+      <div className="flex h-10 items-center gap-2.5 border-b border-synapse-border px-3.5">
+        <GitBranch className="h-3.5 w-3.5 shrink-0 text-synapse-text-3" />
+        <span className="text-[12.5px] font-medium text-synapse-text">
           {files.length} file{files.length !== 1 ? "s" : ""} changed
         </span>
         {(totals.added > 0 || totals.removed > 0) && (
@@ -207,15 +329,15 @@ function WritePanel({ w, onOpenFile }: { w: WriteState; onOpenFile: (path: strin
           </span>
         )}
         {w.placementDir !== undefined && (
-          <span className="ml-auto text-[11px] font-mono text-synapse-muted truncate">
+          <span className="ml-auto truncate font-mono text-[11px] text-synapse-muted" title={w.placementDir || "repo root"}>
             {w.placementDir || "repo root"}
           </span>
         )}
       </div>
       {!!w.exemplars?.length && (
-        <div className="px-3 py-2 border-b border-synapse-border flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono text-synapse-muted">
-          <span className="text-synapse-text-2">referenced:</span>
-          {w.exemplars.map((e) => <span key={e}>{e}</span>)}
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-synapse-border-subtle px-3.5 py-2.5">
+          <span className={LABEL}>Patterned on</span>
+          <span className="font-mono text-[11px] text-synapse-text-3">{w.exemplars.join("  ·  ")}</span>
         </div>
       )}
       {!!files.length && (
@@ -433,108 +555,108 @@ export default function ChatPanel({ repoId, buildSessionId }: { repoId: string; 
         <div className={clsx("flex flex-col min-w-0", openFilePath ? "flex-1" : "w-full")}>
           <div className="flex-1 overflow-y-auto">
             {hydrated && messages.length === 0 && (
-              <div className="h-full flex flex-col items-center justify-center text-center px-6">
-                <Terminal className="w-9 h-9 text-synapse-border mb-3" strokeWidth={1.5} />
-                <p className="text-synapse-text-2 text-[14px]">Ask, debug, review, or implement — just say what you need.</p>
-                <p className="text-synapse-muted text-[13px] mt-1 mb-6">Context retrieved from code + call graph. Code changes are graph-planned and written to disk.</p>
-                <div className="flex flex-wrap justify-center gap-2 max-w-xl">
-                  {STARTERS.map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => send(s)}
-                      className="px-3 py-1.5 rounded-md border border-synapse-border text-synapse-text-2 hover:text-synapse-text hover:border-synapse-border-strong text-[13px] transition-all"
-                    >
-                      {s}
-                    </button>
-                  ))}
+              <div className="flex h-full items-center justify-center px-8">
+                <div className="w-full max-w-[560px] pb-10">
+                  <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-synapse-text">
+                    What should we look at?
+                  </h1>
+                  <p className="mt-2.5 max-w-[480px] text-[13.5px] leading-[1.65] text-synapse-text-3">
+                    Answers are grounded in this repo&apos;s code graph — files, call paths and history.
+                    Implementation requests are planned, written to disk and returned as diffs.
+                  </p>
+                  <div className={clsx(LABEL, "mt-8")}>Try</div>
+                  <div className="mt-2.5 grid grid-cols-2 gap-2">
+                    {STARTERS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => send(s)}
+                        className="rounded-lg border border-synapse-border bg-synapse-surface px-3 py-2.5 text-left text-[12.5px] leading-snug text-synapse-text-2 transition-colors hover:border-synapse-border-strong hover:text-synapse-text"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
 
-            <div className="max-w-[780px] mx-auto px-6 py-8 space-y-8">
+            <div className="mx-auto max-w-[760px] px-8 py-10">
               {messages.map((m, i) => (
-                <div key={i} className="group">
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="text-[12px] font-medium text-synapse-text-2">
-                      {m.role === "user" ? "You" : "Synapse"}
-                    </span>
-
-                    {m.role === "assistant" && m.retrieval && (
-                      <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-synapse-muted">
-                        <span>{m.retrieval.intent}</span>
-                        {m.retrieval.has_commits && (
-                          <span className="flex items-center gap-1">
-                            <GitBranch className="w-2.5 h-2.5" /> history
-                          </span>
-                        )}
-                        <span className={clsx(
-                          m.retrieval.coverage === "complete" ? "text-synapse-green" :
-                          m.retrieval.coverage === "empty" ? "text-synapse-red" : "text-synapse-amber"
-                        )}>cov {m.retrieval.coverage}</span>
-                      </div>
-                    )}
-                    {m.role === "assistant" && m.isClarifying && !m.loading && (
-                      <span className="flex items-center gap-1 text-[11px] text-synapse-amber">
-                        <HelpCircle className="w-3 h-3" /> needs your input
-                      </span>
-                    )}
-                  </div>
-
-                  {m.role === "assistant" && m.retrieval && !!m.retrieval.anchors.length && (
-                    <div className="mb-2 text-[11px] font-mono text-synapse-muted truncate">
-                      {m.retrieval.anchors.slice(0, 5).join(" · ")}
-                    </div>
-                  )}
-
+                <div key={i} className={clsx("group", i > 0 && (m.role === "user" ? "mt-11" : "mt-5"))}>
                   {m.role === "user" ? (
-                    <div className="border-l-2 border-synapse-border-strong pl-4 text-[15px] leading-[1.6] text-synapse-text whitespace-pre-wrap">
+                    <div className="whitespace-pre-wrap rounded-lg border border-synapse-border bg-synapse-surface px-4 py-3 text-[14.5px] leading-[1.6] text-synapse-text">
                       {m.content}
                     </div>
                   ) : (
                     <>
-                      {!!m.activity?.length && <ActivityFeed activity={m.activity} done={!m.loading} />}
+                      {m.loading && !!m.activity?.length && <LiveTrail activity={m.activity} />}
+
                       {m.loading && !m.content && !m.activity?.length && (
-                        <div className="flex items-center gap-2 text-synapse-muted text-[13px]">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          Thinking...
+                        <div className="flex items-center gap-2 text-[12.5px] text-synapse-text-3">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Thinking…
                         </div>
                       )}
+
+                      {m.isClarifying && !m.loading && (
+                        <div className="mb-3.5 flex items-start gap-2 border-l-2 border-synapse-amber/50 pl-3 text-[12.5px] leading-[1.5] text-synapse-amber/90">
+                          <HelpCircle className="mt-[2px] h-3.5 w-3.5 shrink-0" />
+                          <span>Needs your input before continuing.</span>
+                        </div>
+                      )}
+
                       {m.content && (
-                        <div className="prose-synapse text-[15px] leading-[1.65] text-synapse-text">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                        <div className="prose-synapse">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+                            components={{ pre: ({ children }) => <CodeBlock>{children}</CodeBlock> }}
+                          >
+                            {m.content}
+                          </ReactMarkdown>
                         </div>
                       )}
+
                       {m.write && (m.write.plan?.length || m.write.placementDir !== undefined) && (
                         <WritePanel w={m.write} onOpenFile={setOpenFilePath} />
+                      )}
+
+                      {!m.loading && (!!m.activity?.length || !!m.retrieval) && (
+                        <AnswerMeta activity={m.activity || []} retrieval={m.retrieval} />
                       )}
                     </>
                   )}
                 </div>
               ))}
-              <div ref={bottomRef} />
+              <div ref={bottomRef} className="h-2" />
             </div>
           </div>
 
-          <div className="border-t border-synapse-border px-6 py-4">
-            <div className="max-w-[780px] mx-auto">
-              <div className="rounded-lg border border-synapse-border bg-synapse-surface-2 focus-within:border-synapse-cyan/50 focus-within:ring-1 focus-within:ring-synapse-cyan/20 transition-all">
+          <div className="border-t border-synapse-border px-8 pb-5 pt-4">
+            <div className="mx-auto max-w-[760px]">
+              <div className="rounded-xl border border-synapse-border bg-synapse-surface px-3.5 pb-2.5 pt-3 transition-colors focus-within:border-synapse-border-strong">
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                  placeholder="Ask about this repo…"
+                  placeholder="Ask about this repo, or describe a change to make…"
                   rows={1}
-                  className="w-full max-h-[200px] bg-transparent px-3.5 py-3 text-[15px] leading-[1.5] text-synapse-text resize-none focus:outline-none placeholder:text-synapse-muted"
+                  className="block max-h-[200px] w-full resize-none bg-transparent text-[14.5px] leading-[1.6] text-synapse-text placeholder:text-synapse-muted focus:outline-none"
                 />
-                <div className="flex h-10 items-center px-2.5">
-                  <button onClick={() => send()} disabled={!input.trim() || streaming}
-                    className="ml-auto flex h-7 items-center gap-1.5 rounded-md bg-synapse-cyan px-2.5 text-[13px] font-medium text-synapse-bg disabled:bg-synapse-surface-3 disabled:text-synapse-muted transition-colors">
-                    {streaming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                    Send
+                <div className="mt-2 flex items-center">
+                  <span className="text-[11px] text-synapse-muted">
+                    <kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift+Enter</kbd> for newline
+                  </span>
+                  <button
+                    onClick={() => send()}
+                    disabled={!input.trim() || streaming}
+                    title="Send"
+                    className="ml-auto flex h-7 w-7 items-center justify-center rounded-md bg-synapse-text text-synapse-bg transition-colors hover:bg-white disabled:bg-synapse-surface-3 disabled:text-synapse-muted"
+                  >
+                    {streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                   </button>
                 </div>
               </div>
-              <p className="text-[11px] text-synapse-muted mt-2 text-center">Enter to send · Shift+Enter for newline</p>
             </div>
           </div>
         </div>

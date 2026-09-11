@@ -15,6 +15,7 @@ dist/
 build/
 .env.local
 .env.production
+tsconfig.tsbuildinfo
 
 # Docker
 .docker/

@@ -6,12 +6,19 @@
 :root {
   --bg: #08090A;
   --surface: #0F1011;
+  --code-bg: #0B0C0E;
+  --border-subtle: #191B1E;
   --border: #212327;
+  --border-strong: #2C3034;
   --cyan: #2AA8E0;
   --green: #3FB950;
+  --amber: #D29922;
+  --red: #F0524A;
   --purple: #a855f7;
-  --text: #E8EAED;
-  --muted: #6A7076;
+  --text: #EDEFF2;
+  --text-2: #A3A9B0;
+  --text-3: #7C838B;
+  --muted: #666C73;
 }
 
 * { box-sizing: border-box; }
@@ -54,20 +61,156 @@ pre code { font-family: 'JetBrains Mono', monospace !important; font-size: 0.8re
 .link-imports { stroke: #a855f744; }
 .link-calls { stroke: #00ff8744; }
 
-/* Assistant answer prose — no card, reads like a document */
-.prose-synapse p { margin-bottom: 1rem; }
-.prose-synapse p:last-child { margin-bottom: 0; }
-.prose-synapse h1, .prose-synapse h2 { margin-top: 2rem; margin-bottom: 0.75rem; font-size: 15px; font-weight: 600; color: var(--text); }
-.prose-synapse h3 { margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 14px; font-weight: 500; color: var(--text); }
-.prose-synapse ul, .prose-synapse ol { margin: 1rem 0; padding-left: 1.25rem; }
-.prose-synapse li { margin-bottom: 0.375rem; }
-.prose-synapse li::marker { color: var(--muted); }
-.prose-synapse code { border-radius: 4px; background: #16181A; padding: 0.125rem 0.375rem; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--text); }
-.prose-synapse pre { margin: 1rem 0; overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); background: #16181A; padding: 1rem; }
-.prose-synapse pre code { background: transparent; padding: 0; font-size: 12.5px; line-height: 1.55; }
-.prose-synapse a { color: var(--cyan); text-underline-offset: 2px; }
+/* ─────────────────────────────────────────────────────────────
+   Assistant answer prose — reads like a written document, with a
+   real type scale so headings, body and asides are distinguishable.
+   ───────────────────────────────────────────────────────────── */
+.prose-synapse {
+  font-size: 15px;
+  line-height: 1.72;
+  color: #D9DDE2;
+}
+.prose-synapse > *:first-child { margin-top: 0 !important; }
+.prose-synapse > *:last-child { margin-bottom: 0 !important; }
+
+.prose-synapse p { margin: 0 0 0.95rem; }
+
+/* h1/h2 are section titles: larger, tighter, brighter than body. */
+.prose-synapse h1 {
+  margin: 2rem 0 0.85rem;
+  font-size: 19px;
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #FFFFFF;
+}
+.prose-synapse h2 {
+  margin: 1.9rem 0 0.75rem;
+  font-size: 16.5px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #F5F7F9;
+}
+/* h3 drops to a label voice — a clearly different rank, not a smaller h2. */
+.prose-synapse h3 {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.prose-synapse h4 {
+  margin: 1.25rem 0 0.4rem;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.prose-synapse ul, .prose-synapse ol { margin: 0.85rem 0; padding-left: 1.15rem; }
+.prose-synapse ul { list-style: none; padding-left: 1.05rem; }
+.prose-synapse ul > li { position: relative; }
+.prose-synapse ul > li::before {
+  content: "";
+  position: absolute;
+  left: -0.95rem;
+  top: 0.65em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.prose-synapse li { margin-bottom: 0.35rem; }
+.prose-synapse li > ul, .prose-synapse li > ol { margin: 0.35rem 0; }
+.prose-synapse ol > li::marker { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: 0.9em; }
+
+.prose-synapse hr { margin: 1.75rem 0; border: 0; border-top: 1px solid var(--border-subtle); }
+
+.prose-synapse blockquote {
+  margin: 1rem 0;
+  padding: 0.1rem 0 0.1rem 0.9rem;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-2);
+}
+
+/* Inline code sits *inside* a sentence — quieter and smaller than a block. */
+.prose-synapse :not(pre) > code {
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  background: #15171A;
+  padding: 0.08em 0.36em;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.845em;
+  color: #C6CDD4;
+  white-space: nowrap;
+}
+
+/* Code blocks are set *into* the page (darker than canvas), not raised. */
+.prose-synapse pre {
+  margin: 1.1rem 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--code-bg);
+  padding: 0.85rem 1rem;
+}
+.prose-synapse pre code {
+  display: block;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #C6CDD4;
+  white-space: pre;
+}
+
+/* Code blocks rendered through the CodeBlock wrapper supply their own chrome. */
+.prose-synapse pre.code-body {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.prose-synapse a { color: #5FB3E3; text-decoration: none; text-underline-offset: 3px; }
 .prose-synapse a:hover { text-decoration: underline; }
-.prose-synapse strong { color: var(--text); font-weight: 600; }
-.prose-synapse table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 13px; }
-.prose-synapse th, .prose-synapse td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }
-.prose-synapse th { color: var(--text); font-weight: 500; background: #16181A; }
+.prose-synapse strong { color: #FFFFFF; font-weight: 600; }
+.prose-synapse em { color: var(--text-2); }
+
+.prose-synapse table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.1rem 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.prose-synapse th, .prose-synapse td {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  text-align: left;
+  vertical-align: top;
+}
+.prose-synapse th {
+  color: var(--text-3);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom-color: var(--border);
+}
+.prose-synapse tr:last-child td { border-bottom: 0; }
+
+/* Syntax highlighting — desaturated to stay inside the dark palette. */
+.hljs-comment, .hljs-quote { color: #575D65; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: #9A8FD6; }
+.hljs-string, .hljs-regexp, .hljs-addition { color: #A3C081; }
+.hljs-number, .hljs-meta { color: #CFA079; }
+.hljs-title, .hljs-title.function_, .hljs-section, .hljs-name { color: #6FB3D9; }
+.hljs-type, .hljs-title.class_, .hljs-built_in, .hljs-symbol { color: #7FC0B4; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: #C2A362; }
+.hljs-deletion { color: #C8706B; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }

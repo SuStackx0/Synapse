@@ -48,21 +48,24 @@ export default function SessionSidebar({
   };
 
   return (
-    <div className="w-[260px] shrink-0 border-r border-synapse-border flex flex-col bg-synapse-surface">
-      <div className="flex h-11 items-center px-3">
+    <div className="flex w-[248px] shrink-0 flex-col border-r border-synapse-border bg-synapse-surface">
+      <div className="flex h-14 items-center px-3">
         <button
           onClick={onNewChat}
-          className="flex h-7 flex-1 items-center gap-2 rounded-md border border-synapse-border px-2.5 text-[13px] font-medium text-synapse-text hover:bg-synapse-surface-2 transition-colors"
+          className="flex h-8 flex-1 items-center gap-2 rounded-md border border-synapse-border px-2.5 text-[12.5px] font-medium text-synapse-text-2 transition-colors hover:border-synapse-border-strong hover:text-synapse-text"
         >
-          <Plus className="w-3.5 h-3.5" /> New chat
+          <Plus className="h-3.5 w-3.5" /> New chat
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto px-1.5 pb-3">
+      <div className="px-4 pb-1.5 text-[10.5px] font-medium uppercase tracking-[0.09em] text-synapse-muted">
+        Conversations
+      </div>
+      <div className="flex-1 overflow-y-auto px-2 pb-3">
         {loading ? (
-          <div className="px-2.5 py-4 text-[12px] text-synapse-muted">Loading…</div>
+          <div className="px-2 py-3 text-[12px] text-synapse-muted">Loading…</div>
         ) : sessions.length === 0 ? (
-          <div className="px-2.5 py-4 text-[12px] text-synapse-muted leading-relaxed">
-            No conversations yet. Ask something to start one.
+          <div className="px-2 py-3 text-[12px] leading-relaxed text-synapse-muted">
+            Nothing here yet.
           </div>
         ) : (
           <div>
@@ -71,15 +74,12 @@ export default function SessionSidebar({
                 key={s.id}
                 onClick={() => onSelect(s.id)}
                 className={clsx(
-                  "group relative flex h-8 items-center gap-2 rounded-md px-2.5 my-0.5 cursor-pointer text-[13px] transition-colors",
-                  s.id === activeSessionId ? "bg-synapse-surface-3 text-synapse-text" : "text-synapse-text-2 hover:bg-synapse-surface-2"
+                  "group relative my-0.5 flex h-8 cursor-pointer items-center gap-2 rounded-md px-2.5 text-[12.5px] transition-colors",
+                  s.id === activeSessionId ? "bg-synapse-surface-3 text-synapse-text" : "text-synapse-text-3 hover:bg-synapse-surface-2 hover:text-synapse-text-2"
                 )}
               >
-                {s.id === activeSessionId && (
-                  <span className="absolute left-0 top-1.5 h-5 w-[2px] rounded-r bg-synapse-cyan" />
-                )}
-                <span className="truncate flex-1">{s.title || "New chat"}</span>
-                <span className="text-[11px] font-mono tabular-nums text-synapse-muted shrink-0 group-hover:hidden">
+                <span className="flex-1 truncate">{s.title || "New chat"}</span>
+                <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-synapse-muted group-hover:hidden">
                   {relativeTime(s.updated_at)}
                 </span>
                 <button

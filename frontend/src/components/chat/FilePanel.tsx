@@ -86,32 +86,32 @@ export default function FilePanel({ repoId, path, initialContent, onClose }: Fil
 
   return (
     <div className="w-full h-full flex flex-col bg-synapse-bg">
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-synapse-border shrink-0">
-        <FileCode className="w-4 h-4 text-synapse-cyan shrink-0" />
+      <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-synapse-border px-4">
+        <FileCode className="h-3.5 w-3.5 shrink-0 text-synapse-text-3" />
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-1.5 font-mono text-sm">
-            <span className="text-synapse-text truncate">{fileName}</span>
-            {dirty && <span className="w-1.5 h-1.5 rounded-full bg-synapse-cyan shrink-0" title="Unsaved changes" />}
+          <div className="flex items-center gap-1.5 font-mono text-[12.5px]">
+            <span className="truncate text-synapse-text">{fileName}</span>
+            {dirty && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-synapse-amber" title="Unsaved changes" />}
           </div>
-          {dirName && <p className="text-[10px] text-synapse-muted/60 font-mono truncate">{dirName}/</p>}
+          {dirName && <p className="truncate font-mono text-[10.5px] text-synapse-muted">{dirName}/</p>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {error && (
-            <span className="flex items-center gap-1 text-[11px] font-mono text-red-400">
-              <AlertCircle className="w-3 h-3" /> {error}
+            <span className="flex items-center gap-1 text-[11px] text-synapse-red">
+              <AlertCircle className="h-3 w-3" /> {error}
             </span>
           )}
           {saved && !error && (
-            <span className="flex items-center gap-1 text-[11px] font-mono text-synapse-green">
-              <Check className="w-3 h-3" /> Saved
+            <span className="flex items-center gap-1 text-[11px] text-synapse-green">
+              <Check className="h-3 w-3" /> Saved
             </span>
           )}
           <button
             onClick={handleSave}
             disabled={!dirty || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-synapse-cyan/10 border border-synapse-cyan/30 text-synapse-cyan text-xs font-mono hover:bg-synapse-cyan/20 transition-all disabled:opacity-30 disabled:cursor-default"
+            className="flex h-7 items-center gap-1.5 rounded-md border border-synapse-border px-2.5 text-[12px] font-medium text-synapse-text-2 transition-colors hover:border-synapse-border-strong hover:text-synapse-text disabled:border-synapse-border-subtle disabled:text-synapse-muted"
           >
-            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+            {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
             Save
           </button>
           <button onClick={onClose} className="text-synapse-muted hover:text-synapse-text transition-colors p-1">
@@ -139,7 +139,7 @@ export default function FilePanel({ repoId, path, initialContent, onClose }: Fil
         )}
       </div>
 
-      <div className="px-4 py-1.5 border-t border-synapse-border text-[10px] font-mono text-synapse-muted/50 flex items-center justify-between shrink-0">
+      <div className="flex shrink-0 items-center justify-between border-t border-synapse-border px-4 py-2 text-[10.5px] font-mono text-synapse-muted">
         <span>{content.split("\n").length} lines</span>
         <span>⌘S to save</span>
       </div>
