@@ -23,7 +23,8 @@ from langchain_core.language_models import BaseLanguageModel
 from ingestion.embedder import embedder
 from ingestion.graph_builder import graph_builder, serialize_cards_to_sgl
 from agents.intent import (
-    classify_mode, classify_intent, extract_anchors, infer_agent_type, infer_roles,
+    classify_mode, classify_mode_with_history, classify_intent, extract_anchors,
+    infer_agent_type, infer_roles,
 )
 from agents.write_context import build_write_context, render_write_context
 from agents.write_tool import FileWrite, apply_write, preview_write, safe_path, PathViolation
@@ -159,8 +160,10 @@ def _coverage(sgl: str, commits: str) -> str:
 # ── Shared entry: classify read vs write ────────────────────────────────
 
 async def classify(state: AgentState) -> AgentState:
-    query = state["messages"][-1].content if state["messages"] else ""
-    mode, decided_by = classify_mode(query)
+    messages = state["messages"]
+    query = messages[-1].content if messages else ""
+    prior_human = [m.content for m in messages[:-1] if isinstance(m, HumanMessage)]
+    mode, decided_by = classify_mode_with_history(query, prior_human)
     agent_type = infer_agent_type(query)
     return {**state, "mode": mode, "mode_decided_by": decided_by, "agent_type": agent_type}
 

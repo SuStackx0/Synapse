@@ -41,8 +41,9 @@ _LEAD_READ = (
     "is", "are", "can i", "should i", "could you explain", "explain",
 )
 _READ_CUES = (
-    "explain", "review", "audit", "walk me through", "show me", "list",
-    "find", "root cause", "why does", "what does", "how does",
+    "explain", "review", "audit", "walk me through", "show me",
+    "list all", "list the", "give me a list", "find", "root cause",
+    "why does", "what does", "how does",
     "traceback", "stack trace", "smell", "vulnerab", "bottleneck",
 )
 _TRACEBACK_RE = re.compile(
@@ -84,6 +85,24 @@ def classify_mode(message: str) -> Tuple[Mode, str]:
     if r >= 3 and w == 0:
         return "read", "heuristic"
     return ("write" if w > r else "read"), "default"
+
+
+def classify_mode_with_history(current_message: str, prior_human_messages: list[str]) -> Tuple[Mode, str]:
+    """
+    Same heuristic, but a genuinely zero-signal reply ("yes please do it",
+    "body app.py") no longer defaults to read. A short follow-up like that
+    carries no write/read cues of its own - it's answering the previous
+    turn, not starting a new request - so inherit the most recent prior
+    turn's classification instead of guessing "read" via the w==r tiebreak.
+    """
+    mode, decided_by = classify_mode(current_message)
+    w, r = _score(current_message)
+    if w == 0 and r == 0:
+        for prior in reversed(prior_human_messages):
+            prior_mode, prior_decided_by = classify_mode(prior)
+            if prior_decided_by != "default":
+                return prior_mode, "inherited"
+    return mode, decided_by
 
 
 def infer_agent_type(message: str) -> Literal["qa", "debug", "review"]:

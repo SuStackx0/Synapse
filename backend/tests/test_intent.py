@@ -2,7 +2,8 @@
 import pytest
 
 from agents.intent import (
-    classify_mode, infer_agent_type, infer_roles, classify_intent, extract_anchors,
+    classify_mode, classify_mode_with_history, infer_agent_type, infer_roles,
+    classify_intent, extract_anchors,
 )
 
 
@@ -41,6 +42,51 @@ def test_classify_mode_write_for_add_endpoint():
 def test_classify_mode_returns_heuristic_or_default_reason():
     _, reason = classify_mode("implement rate limiting on login")
     assert reason in ("heuristic", "default")
+
+
+def test_classify_mode_write_for_implement_with_to_do_list():
+    # Regression: "list" was a bare _READ_CUES substring, so "to-do list"
+    # flipped an obvious write request ("implement a feature ... to their
+    # to-do list ...") into a 2-2 tie that the tiebreak resolved to "read".
+    msg = (
+        "i need to implement a feature when someone adds something to their "
+        "to-do list i want them to add priority whether its high low or medium"
+    )
+    mode, _ = classify_mode(msg)
+    assert mode == "write"
+
+
+def test_classify_mode_list_all_still_reads():
+    mode, _ = classify_mode("list all API endpoints")
+    assert mode == "read"
+
+
+# ── classify_mode_with_history ──────────────────────────────────────────
+
+def test_classify_mode_with_history_inherits_write_for_zero_signal_reply():
+    prior = ["implement rate limiting on the login endpoint"]
+    mode, decided_by = classify_mode_with_history("yes please do it", prior)
+    assert mode == "write"
+    assert decided_by == "inherited"
+
+
+def test_classify_mode_with_history_inherits_across_a_filename_reply():
+    prior = ["implement rate limiting on the login endpoint"]
+    mode, decided_by = classify_mode_with_history("body app.py", prior)
+    assert mode == "write"
+    assert decided_by == "inherited"
+
+
+def test_classify_mode_with_history_does_not_override_clear_signal():
+    prior = ["implement rate limiting on the login endpoint"]
+    mode, decided_by = classify_mode_with_history("what does this function do?", prior)
+    assert mode == "read"
+    assert decided_by == "heuristic"
+
+
+def test_classify_mode_with_history_no_prior_falls_back_to_default():
+    mode, decided_by = classify_mode_with_history("yes please do it", [])
+    assert decided_by == "default"
 
 
 # ── infer_agent_type ─────────────────────────────────────────────────────
