@@ -58,8 +58,8 @@ The workflow:
 The provider system is designed around one constraint: all inference APIs, whether OpenAI, Anthropic (via proxy), or local vLLM servers, expose the same HTTP interface (`POST /v1/chat/completions`). This means a single HTTP client (LangChain's `ChatOpenAI`) parameterized with `base_url` can talk to all of them.
 
 The provider row in SQLite stores:
-- `base_url`: the endpoint (e.g., `http://10.29.210.8:8711/v1`)
-- `model`: the model identifier (e.g., `gemma4`)
+- `base_url`: the endpoint (e.g., `http://localhost:8000/v1` for a local vLLM server)
+- `model`: the model identifier (e.g., `llama3`)
 - `api_key`: empty string for local deployments, actual key for cloud APIs
 - `is_active`: only one row can be true at a time
 

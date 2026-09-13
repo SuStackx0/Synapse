@@ -7,7 +7,7 @@ import { clsx } from "clsx";
 
 const TYPE_LABELS: Record<string, string> = {
   openai: "OpenAI", anthropic: "Anthropic", vllm: "vLLM",
-  sglang: "SGLang", ollama: "Ollama", gemma_local: "Gemma (Local)",
+  sglang: "SGLang", ollama: "Ollama",
 };
 
 export default function SettingsPage() {
@@ -106,7 +106,7 @@ export default function SettingsPage() {
               <div className="grid grid-cols-2 gap-3">
                 {[
                   { label: "Name", key: "name", placeholder: "My Provider" },
-                  { label: "Model ID", key: "model", placeholder: "gpt-4o / gemma4 / ..." },
+                  { label: "Model ID", key: "model", placeholder: "gpt-4o / llama3 / ..." },
                   { label: "Base URL", key: "base_url", placeholder: "https://api.openai.com/v1" },
                   { label: "API Key", key: "api_key", placeholder: "sk-... (leave empty for local)" },
                 ].map(({ label, key, placeholder }) => (
@@ -137,7 +137,7 @@ export default function SettingsPage() {
               <div className="text-center py-10 border border-dashed border-synapse-border rounded-xl">
                 <Zap className="w-8 h-8 text-synapse-muted mx-auto mb-3" />
                 <p className="text-synapse-muted text-sm font-mono">No providers yet. Add one above.</p>
-                <p className="text-synapse-muted/50 text-xs mt-1">Default: Gemma 26 via vLLM at 10.29.210.8</p>
+                <p className="text-synapse-muted/50 text-xs mt-1">Bring your own model — OpenAI, Anthropic, vLLM, SGLang, or Ollama.</p>
               </div>
             )}
             {providers.map((p) => (

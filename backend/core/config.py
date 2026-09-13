@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     # Never set this to "*" while credentialed requests are enabled.
     cors_allowed_origins: str = "http://localhost:3000"
 
+    # Optional dev-only LLM fallback, used ONLY when no LLMProvider row is active.
+    # Intentionally has no hardcoded default — Synapse is bring-your-own-model, it
+    # never ships pointed at a specific vendor or a developer's private endpoint.
+    # Set these in a local, gitignored docker-compose.override.yml for convenience
+    # during development; a real deploy should configure a provider via
+    # POST /settings/providers instead.
+    dev_llm_base_url: str = ""
+    dev_llm_model: str = ""
+    dev_llm_api_key: str = ""
+
     @property
     def cors_origins(self) -> List[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
