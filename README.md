@@ -6,7 +6,7 @@ AI-powered codebase intelligence. Connect a repo — or start one from nothing �
 
 ## What makes it different
 
-Every piece of context that reaches the LLM comes from a real Neo4j call graph, not raw text chunks. Qdrant only resolves *which* symbols are relevant (as UIDs); Neo4j supplies the actual structure — signatures, callers, callees, entrypoints — that gets serialized into the prompt. Ask it to check whether something is "wired in properly" and it reads the real files the graph resolved, then answers with file:line citations instead of guessing.
+Most "AI codebase" tools embed text chunks and hope similarity search finds the right ones. Synapse splits the job in two: Neo4j holds the actual call graph — files, functions, signatures, callers, callees, entrypoints — and Qdrant is used only to resolve *which* symbols a query is about, returning IDs, never text. Every prompt is built from the graph, not from a chunk that happened to score well. Ask it to check whether something is "wired in properly" and it reads the real files the graph resolved, then answers with file:line citations instead of guessing.
 
 ![Ask AI — graph-grounded analysis](docs/screenshots/ask-ai.jpg)
 
@@ -24,7 +24,7 @@ Every piece of context that reaches the LLM comes from a real Neo4j call graph, 
   ![Vibe Check — codebase health](docs/screenshots/vibe-check.jpg)
 - **Commit History Chat** — talk to your git history.
 - **Model Benchmarker** — compare two LLM providers side by side on the same query.
-- **Bring Your Own Model** — plug in OpenAI, Anthropic, vLLM, sglang, or Ollama. Credentials are encrypted at rest.
+- **Bring Your Own Model** — plug in OpenAI, Anthropic, vLLM, SGLang, or Ollama. No vendor is hardcoded and there's no default endpoint; you configure and activate a provider, and credentials are encrypted at rest.
 - **Session persistence** — every conversation is saved and resumable; switching or starting a new chat never loses history.
 - **In-app file editor** — open any file the agent touched (or any file at all) in a side-by-side console and edit it directly.
 
@@ -34,7 +34,7 @@ Every piece of context that reaches the LLM comes from a real Neo4j call graph, 
 docker compose up --build
 ```
 
-Open [http://localhost:3000](http://localhost:3000)
+Open [http://localhost:3000](http://localhost:3000), then add and activate an LLM provider under **Settings** — there's no default model configured, so this is the one required step before your first query.
 
 For local dev conveniences (e.g. mounting your own repos), copy settings into a
 gitignored `docker-compose.override.yml` rather than editing the committed compose
