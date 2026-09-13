@@ -9,7 +9,7 @@ import json, time, asyncio, uuid
 from core.database import get_db, SessionLocal
 from core.models import Repository, ChatSession, ChatMessage
 from agents.graph import build_agent_graph, initial_state, invalidate_repo_map
-from agents.llm_factory import get_active_llm
+from agents.llm_factory import get_active_llm, NoActiveProviderError
 from langchain_core.messages import HumanMessage, AIMessage
 import structlog
 
@@ -88,7 +88,10 @@ async def chat(req: ChatRequest, bg: BackgroundTasks, db: AsyncSession = Depends
 
     await _persist_message(session_id, "user", req.message, {})
 
-    llm = await get_active_llm(db)
+    try:
+        llm = await get_active_llm(db)
+    except NoActiveProviderError as e:
+        raise HTTPException(400, str(e))
     graph = build_agent_graph(llm)
 
     messages = [*history_messages, HumanMessage(content=req.message)]

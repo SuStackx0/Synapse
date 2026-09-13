@@ -17,7 +17,6 @@ PROVIDER_PRESETS = {
     "vllm": {"base_url": "http://localhost:8000/v1", "model": ""},
     "sglang": {"base_url": "http://localhost:30000/v1", "model": ""},
     "ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3"},
-    "gemma_local": {"base_url": "http://10.29.210.8:8711/v1", "model": "gemma4"},
 }
 
 
