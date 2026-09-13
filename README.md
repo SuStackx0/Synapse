@@ -8,7 +8,7 @@ AI-powered codebase intelligence. Connect a repo — or start one from nothing �
 
 Most "AI codebase" tools embed text chunks and hope similarity search finds the right ones. Synapse splits the job in two: Neo4j holds the actual call graph — files, functions, signatures, callers, callees, entrypoints — and Qdrant is used only to resolve *which* symbols a query is about, returning IDs, never text. Every prompt is built from the graph, not from a chunk that happened to score well. Ask it to check whether something is "wired in properly" and it reads the real files the graph resolved, then answers with file:line citations instead of guessing.
 
-![Ask AI — graph-grounded analysis](docs/screenshots/ask-ai.jpg)
+![Autonomous build — task-by-task progress in a real chat session](docs/screenshots/autobuild-progress.png)
 
 ## Features
 
