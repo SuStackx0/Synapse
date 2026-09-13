@@ -33,3 +33,6 @@ docker-compose.override.yml
 # Local dev secret key (generated on first run if SYNAPSE_SECRET_KEY is unset)
 .synapse_secret_key
 backend/.synapse_secret_key
+
+# Personal notes — never meant to be part of the public repo history
+docs/INTERVIEW_PREP.md
