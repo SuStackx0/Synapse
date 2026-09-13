@@ -175,6 +175,29 @@ async def test_planner_flips_rewrite_to_create_for_missing_file(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_planner_snaps_wiring_path_back_when_model_invents_new_directory(tmp_path):
+    # Regression: the model wrote "backend/app.py" for the wiring edit when the
+    # real (only) app.py lives at repo root - forking a duplicate entrypoint
+    # that gets "wired" while the real running app never changes.
+    (tmp_path / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\n")
+    llm = _FakeLLM(json.dumps({
+        "summary": "add search",
+        "files": [
+            {"rel_path": "search_utils.py", "op": "create", "intent": "search helper"},
+            {"rel_path": "backend/app.py", "op": "rewrite", "intent": "register search route"},
+        ],
+    }))
+    planner = make_planner_node(llm)
+    state = initial_state([HumanMessage(content="add search")], repo_id="r1", repo_root=str(tmp_path))
+    state["wiring_paths"] = ["app.py"]
+    result = await planner(state)
+    paths = {f["rel_path"]: f["op"] for f in result["plan"]}
+    assert paths["search_utils.py"] == "create"
+    assert "app.py" in paths and "backend/app.py" not in paths
+    assert paths["app.py"] == "rewrite"
+
+
+@pytest.mark.asyncio
 async def test_planner_leaves_correct_op_unchanged(tmp_path):
     (tmp_path / "app.py").write_text("x = 1\n")
     llm = _FakeLLM(json.dumps({

@@ -117,6 +117,7 @@ class AgentState(TypedDict):
     # write path
     role_hint: list
     placement_dir: str
+    wiring_paths: list          # real rel_paths of wiring files, to correct planner path drift
     plan: list
     plan_summary: str
     plan_attempts: int
@@ -140,7 +141,7 @@ def initial_state(messages, repo_id: str, repo_root: str = "", agent_type: str =
         "auto_apply": auto_apply,
         "intent": "", "anchors": [], "context_sgl": "", "commit_context": "",
         "retrieval_trace": [], "coverage": "",
-        "role_hint": [], "placement_dir": "", "plan": [], "plan_summary": "",
+        "role_hint": [], "placement_dir": "", "wiring_paths": [], "plan": [], "plan_summary": "",
         "plan_attempts": 0, "plan_last_raw_output": "", "write_results": [], "files_written": [],
         "write_errors": [], "progress": [], "_pending_writes": [],
         "clarifying_question": "",
@@ -458,6 +459,7 @@ async def plan_context(state: AgentState) -> AgentState:
         "role_hint": roles,
         "placement_dir": wc.placement_dir,
         "context_sgl": rendered,   # reuse this field to carry the rendered write context
+        "wiring_paths": [p for p, _ in wc.wiring_files],
         "progress": progress,
     }
 
@@ -472,6 +474,16 @@ _PLANNER_SYS = (
     "Rules: reuse the import/framework style shown in the exemplar files. "
     "Prefer creating new files over rewriting large existing ones. "
     "Plan at most 3 files. rel_path must be relative to the repo root.\n"
+    "CRITICAL — wire new code in, don't just create it: a new file is dead code until "
+    "something imports it, registers it, or calls it. If your plan creates a new module, "
+    "route, component, or class that the running app needs to actually use, your plan MUST "
+    "also include a 'rewrite' entry for whichever existing file registers/imports/calls "
+    "things of that kind (look for a '### Wiring file' block in the context below — that is "
+    "almost always the right target; e.g. the file that registers Flask/Express routes, the "
+    "__init__.py that re-exports modules, the file that calls the function you're adding a "
+    "sibling to). A plan that only creates a new file with no wiring edit is incomplete unless "
+    "the new file is genuinely self-contained (e.g. a standalone script, a pure utility with "
+    "no caller yet, a config/doc file).\n"
     "If the request is genuinely ambiguous or you're missing information only the user "
     "can supply (which auth strategy, which of two plausible locations, an unstated "
     "business rule) — do not guess a plan. Instead output ONLY: "
@@ -521,11 +533,22 @@ def make_planner_node(llm: BaseLanguageModel):
         elif data and isinstance(data.get("files"), list):
             summary = data.get("summary", "")
             repo_root = state.get("repo_root", "")
+            wiring_by_basename = {os.path.basename(p): p for p in state.get("wiring_paths", [])}
             for f in data["files"][:3]:
                 rel_path = f.get("rel_path", "").strip()
                 op = f.get("op", "create")
                 intent = f.get("intent", "")
                 if rel_path and op in ("create", "rewrite", "append"):
+                    # The model sometimes invents a new directory for an entrypoint file it
+                    # means to edit (e.g. writing "backend/app.py" when the real, only app.py
+                    # lives at repo root) - it forks a duplicate that gets "wired" instead of
+                    # the file the running app actually uses, which looks like a successful
+                    # write but does nothing. Snap the path back to the real wiring file
+                    # whenever the basename matches one we already know about.
+                    real_path = wiring_by_basename.get(os.path.basename(rel_path))
+                    if real_path and real_path != rel_path:
+                        rel_path = real_path
+
                     # The model's create/rewrite choice is a guess, not a filesystem check -
                     # it repeatedly said "create" for files that already exist (README.md is
                     # the common case: routers/repos.py pre-writes one before autobuild ever

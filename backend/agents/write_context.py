@@ -88,6 +88,13 @@ def render_write_context(wc: WriteContext) -> str:
         parts.append(f"### Exemplar file (existing pattern to follow) — {path}\n{imp_line}```\n{src}\n```\n")
 
     for path, src in wc.wiring_files:
-        parts.append(f"### Wiring file (may need editing to register new code) — {path}\n```\n{src}\n```\n")
+        parts.append(
+            f"### Wiring file — {path}\n"
+            "This is where new code in this codebase gets registered/imported/called into "
+            "the running app. If your plan adds anything that needs to be reachable (a route, "
+            "an exported module, a registered handler), add a 'rewrite' entry for this file "
+            "too — otherwise the new code you write will never actually run.\n"
+            f"```\n{src}\n```\n"
+        )
 
     return "\n".join(parts)
